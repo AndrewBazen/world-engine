@@ -101,7 +101,6 @@ mod tests {
     }
 
     #[test]
-
     fn test_parse_property() {
         let input = "
           @player:andrew
@@ -120,5 +119,36 @@ mod tests {
         assert!(matches!(node.props.get("class"), Some(ESValue::Text(s)) if s == "Compensated Anarchist"));
         assert!(matches!(node.props.get("strength"), Some(ESValue::Number(v)) if *v == 12.0));
         assert!(matches!(node.props.get("alive"), Some(ESValue::Bool(b)) if *b == true));
+    }
+
+    #[test]
+    fn test_parse_edge() {
+        let input = "
+    @player:andrew
+    --[owns]--> @item:sword
+
+    @item:sword
+    ";
+        let graph = parse(input);
+        let player = graph.get("player", "andrew").unwrap();
+        assert_eq!(player.edges.len(), 1);
+        assert_eq!(player.edges[0].label, "owns");
+        assert_eq!(player.edges[0].target_type, "item");
+        assert_eq!(player.edges[0].target_id, "sword");
+    }
+
+    #[test]
+    fn test_parse_inline_edge() {
+        let input = "@player:andrew --[owns]--> @item:sword";
+        let graph = parse(input);
+        
+        let player = graph.get("player", "andrew");
+        assert!(player.is_some());
+        
+        let node = player.unwrap();
+        assert_eq!(node.edges.len(), 1);
+        assert_eq!(node.edges[0].label, "owns");
+        assert_eq!(node.edges[0].target_type, "item");
+        assert_eq!(node.edges[0].target_id, "sword");
     }
 }

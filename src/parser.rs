@@ -1,4 +1,4 @@
-use crate::graph::{ESGraph, ESNode, ESValue};
+use crate::graph::{ESGraph, ESNode, ESValue, ESEdge};
 
 enum LineType {
     Comment,
@@ -6,7 +6,7 @@ enum LineType {
     NodeDecl,
     Edge,
     Property,
-    Empty,
+    Empty
 }
 
 fn classify(line: &str) -> LineType {
@@ -27,6 +27,7 @@ pub fn parse(input: &str) -> ESGraph {
         if line.is_empty() { continue; }
 
         match classify(line) {
+            LineType::Empty      => { continue; }
             LineType::Comment    => { continue; }
             LineType::NodeDecl   => {
                 if let Some(node) = current {
@@ -59,9 +60,56 @@ pub fn parse(input: &str) -> ESGraph {
                     node.props.insert(key.to_string(), value);
                 }
             }
-            LineType::Edge       => {}
-            LineType::InlineEdge => {}
-            LineType::Empty      => {}
+            LineType::Edge       => {
+                if let Some(node) = current.as_mut() {
+                    let line = line.strip_prefix("--[").unwrap_or(line);
+
+                    let parts: Vec<&str> = line.splitn(2, "]-->").collect();
+                    let label = parts[0];
+
+                    let mut target = parts[1].trim();
+                    target = target.trim_start_matches("@");
+                    let target_parts: Vec<&str> = target.splitn(2, ":").collect();
+                    let target_type = target_parts[0];
+                    let target_id = target_parts[1];
+
+                    node.edges.push(ESEdge::new(label, target_type, target_id));
+                }
+            }
+            LineType::InlineEdge => {
+                // split the inline edge
+                let inline_parts: Vec<&str> = line.splitn(2, " --[").collect();
+
+                // parse the node declaration
+                if let Some(node) = current {
+                    graph.insert(node);
+                }
+                let new_node = inline_parts[0].trim_start_matches("@");
+                let n_parts: Vec<&str> = new_node.splitn(2, ":").collect();
+                let n_type = n_parts[0];
+                let n_id = n_parts[1];
+
+                current = Some(ESNode::new(n_type, n_id));
+
+                // parse the edge
+                if let Some(node) = current.as_mut() {
+                    let parts: Vec<&str> = inline_parts[1].splitn(2, "]-->").collect();
+                    let label = parts[0];
+
+                    let mut target = parts[1].trim();
+                    target = target.trim_start_matches("@");
+                    let target_parts: Vec<&str> = target.splitn(2, ":").collect();
+                    let target_type = target_parts[0];
+                    let target_id = target_parts[1];
+
+                    node.edges.push(ESEdge::new(label, target_type, target_id));
+                }
+
+                // flush current
+                if let Some(node) = current.take() {
+                    graph.insert(node);
+                }
+            }
         }
     }
 

@@ -79,3 +79,13 @@ impl ESNode {
         self.edges.iter().filter(|e| e.label == label).map(|e| e.clone()).collect()
     }
 }
+
+impl ESEdge {
+    pub fn new(label: &str, target_type: &str, target_id: &str) -> Self {
+        ESEdge {
+            label: label.to_string(),
+            target_type: target_type.to_string(),
+            target_id: target_id.to_string(),
+        }
+    }
+}
