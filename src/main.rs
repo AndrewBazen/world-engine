@@ -1,10 +1,13 @@
 mod graph;
 mod query;
 mod parser;
+mod serializer;
 
 use graph::{ESGraph, ESNode, ESValue};
 use query::{follow, incoming};
 use parser::parse;
+use serializer::serialize;
+
 
 fn main() {
     println!("Hello, world!");
@@ -150,5 +153,30 @@ mod tests {
         assert_eq!(node.edges[0].label, "owns");
         assert_eq!(node.edges[0].target_type, "item");
         assert_eq!(node.edges[0].target_id, "sword");
+    }
+
+    #[test]
+    fn test_round_trip() {
+        let input = "
+    @player:andrew
+    courage: 14
+    class: \"Compensated Anarchist\"
+    --[owns]--> @item:sword
+
+    @item:sword
+    damage: 8
+    ";
+        let graph = parse(input);
+        let serialized = serialize(&graph);
+        let reparsed = parse(&serialized);
+
+        // both graphs should have the same nodes
+        assert_eq!(graph.nodes.len(), reparsed.nodes.len());
+        
+        // player should survive the round trip intact
+        let original = graph.get("player", "andrew").unwrap();
+        let restored = reparsed.get("player", "andrew").unwrap();
+        assert_eq!(original.props.len(), restored.props.len());
+        assert_eq!(original.edges.len(), restored.edges.len());
     }
 }
