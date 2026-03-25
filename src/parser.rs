@@ -119,3 +119,101 @@ pub fn parse(input: &str) -> ESGraph {
 
     graph
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serializer::serialize;
+
+    #[test]
+    fn test_parse_node_declaration() {
+        let input = "@player:andrew";
+
+        let graph = parse(input);
+        
+        assert!(graph.nodes.contains_key("player:andrew"));
+        let retrieved = graph.get("player", "andrew");
+        assert!(retrieved.is_some());
+
+        let node = retrieved.unwrap();
+        assert_eq!(node.node_type, "player");
+        assert_eq!(node.id, "andrew");
+    }
+
+    #[test]
+    fn test_parse_property() {
+        let input = "
+          @player:andrew
+            class: \"Compensated Anarchist\"
+            strength: 12.0
+            alive: true
+            ";
+
+        let graph = parse(input);
+
+        let retrieved = graph.get("player", "andrew");
+        assert!(retrieved.is_some());
+
+        let node = retrieved.unwrap();
+        assert_eq!(node.props.len(), 3);
+        assert!(matches!(node.props.get("class"), Some(ESValue::Text(s)) if s == "Compensated Anarchist"));
+        assert!(matches!(node.props.get("strength"), Some(ESValue::Number(v)) if *v == 12.0));
+        assert!(matches!(node.props.get("alive"), Some(ESValue::Bool(b)) if *b == true));
+    }
+
+    #[test]
+    fn test_parse_edge() {
+        let input = "
+    @player:andrew
+    --[owns]--> @item:sword
+
+    @item:sword
+    ";
+        let graph = parse(input);
+        let player = graph.get("player", "andrew").unwrap();
+        assert_eq!(player.edges.len(), 1);
+        assert_eq!(player.edges[0].label, "owns");
+        assert_eq!(player.edges[0].target_type, "item");
+        assert_eq!(player.edges[0].target_id, "sword");
+    }
+
+    #[test]
+    fn test_parse_inline_edge() {
+        let input = "@player:andrew --[owns]--> @item:sword";
+        let graph = parse(input);
+        
+        let player = graph.get("player", "andrew");
+        assert!(player.is_some());
+        
+        let node = player.unwrap();
+        assert_eq!(node.edges.len(), 1);
+        assert_eq!(node.edges[0].label, "owns");
+        assert_eq!(node.edges[0].target_type, "item");
+        assert_eq!(node.edges[0].target_id, "sword");
+    }
+
+    #[test]
+    fn test_round_trip() {
+        let input = "
+    @player:andrew
+    courage: 14
+    class: \"Compensated Anarchist\"
+    --[owns]--> @item:sword
+
+    @item:sword
+    damage: 8
+    ";
+        let graph = parse(input);
+        let serialized = serialize(&graph);
+        let reparsed = parse(&serialized);
+
+        // both graphs should have the same nodes
+        assert_eq!(graph.nodes.len(), reparsed.nodes.len());
+        
+        // player should survive the round trip intact
+        let original = graph.get("player", "andrew").unwrap();
+        let restored = reparsed.get("player", "andrew").unwrap();
+        assert_eq!(original.props.len(), restored.props.len());
+        assert_eq!(original.edges.len(), restored.edges.len());
+    }
+}

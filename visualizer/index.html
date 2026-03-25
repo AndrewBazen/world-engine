@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>World Engine — Graph Visualizer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #080b0f;
+    --bg2:       #0d1117;
+    --bg3:       #111820;
+    --border:    rgba(255,255,255,0.06);
+    --border2:   rgba(255,255,255,0.12);
+    --text:      #c8d6e0;
+    --text2:     #6b8394;
+    --accent:    #00d4ff;
+    --accent2:   #0077aa;
+    --player:    #7c5cbf;
+    --npc:       #1d9e75;
+    --item:      #ba7517;
+    --scene:     #d85a30;
+    --signal:    #00d4ff;
+    --absorbed:  #39ff8a;
+    --ignored:   #ff4444;
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-ui:   'Rajdhani', sans-serif;
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    overflow: hidden;
+  }
+
+  /* scanline overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  #canvas { position: absolute; inset: 0; }
+
+  svg {
+    width: 100%; height: 100%;
+  }
+
+  /* ── Header bar ── */
+  #header {
+    position: fixed; top: 0; left: 0; right: 0;
+    height: 48px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border2);
+    display: flex; align-items: center;
+    padding: 0 20px; gap: 16px;
+    z-index: 100;
+  }
+
+  #header .logo {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  #header .sep { width: 1px; height: 20px; background: var(--border2); }
+
+  #status {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text2);
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  #status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--ignored);
+    transition: background 0.3s;
+  }
+  #status-dot.connected { background: var(--absorbed); animation: pulse-dot 2s infinite; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+  }
+
+  #node-count {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text2);
+  }
+
+  /* ── Side panel ── */
+  #panel {
+    position: fixed; top: 48px; right: 0; bottom: 0;
+    width: 280px;
+    background: var(--bg2);
+    border-left: 1px solid var(--border2);
+    display: flex; flex-direction: column;
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+  }
+  #panel.open { transform: translateX(0); }
+
+  #panel-header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+
+  #panel-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  #panel-close {
+    background: none; border: none;
+    color: var(--text2); cursor: pointer;
+    font-size: 16px; line-height: 1;
+    padding: 2px 6px;
+  }
+  #panel-close:hover { color: var(--text); }
+
+  #panel-body {
+    flex: 1; overflow-y: auto; padding: 16px;
+  }
+
+  .prop-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .prop-key { color: var(--text2); font-family: var(--font-mono); font-size: 11px; }
+  .prop-val { color: var(--text); font-family: var(--font-mono); font-size: 11px; text-align: right; max-width: 140px; word-break: break-all; }
+
+  .prop-val.number { color: var(--accent); }
+  .prop-val.bool-true { color: var(--absorbed); }
+  .prop-val.bool-false { color: var(--ignored); }
+
+  #signal-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border2);
+  }
+
+  .section-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--accent2);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  #signal-context {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 8px;
+    resize: none;
+    outline: none;
+    margin-bottom: 10px;
+  }
+  #signal-context:focus { border-color: var(--accent2); }
+
+  .slider-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px;
+  }
+  .slider-label { font-size: 11px; color: var(--text2); min-width: 56px; font-family: var(--font-mono); }
+  .slider-val { font-size: 11px; color: var(--accent); font-family: var(--font-mono); min-width: 32px; text-align: right; }
+
+  input[type=range] {
+    flex: 1; accent-color: var(--accent);
+    height: 2px; cursor: pointer;
+  }
+
+  #fire-btn {
+    width: 100%;
+    padding: 10px;
+    background: transparent;
+    border: 1px solid var(--accent2);
+    border-radius: 4px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  #fire-btn:hover { background: rgba(0,212,255,0.06); border-color: var(--accent); }
+  #fire-btn:active { transform: scale(0.98); }
+  #fire-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* ── Signal log ── */
+  #log {
+    position: fixed; bottom: 0; left: 0;
+    width: calc(100% - 280px);
+    height: 120px;
+    background: var(--bg2);
+    border-top: 1px solid var(--border2);
+    padding: 8px 16px;
+    overflow-y: auto;
+    z-index: 100;
+    transition: width 0.25s;
+  }
+  #log.panel-closed { width: 100%; }
+
+  .log-entry {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 2px 0;
+    display: flex; gap: 12px;
+    opacity: 0;
+    animation: fadeIn 0.3s forwards;
+  }
+  .log-time { color: var(--text2); min-width: 60px; }
+  .log-from { color: var(--player); }
+  .log-to   { color: var(--npc); }
+  .log-strength { color: var(--accent); min-width: 40px; }
+  .log-absorbed.yes { color: var(--absorbed); }
+  .log-absorbed.no  { color: var(--ignored); }
+  .log-context { color: var(--text2); }
+
+  @keyframes fadeIn { to { opacity: 1; } }
+
+  /* ── D3 graph styles ── */
+  .node-circle {
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .node-circle:hover { filter: brightness(1.3); }
+
+  .node-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: var(--text2);
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .edge-line {
+    stroke: rgba(255,255,255,0.08);
+    stroke-width: 1;
+  }
+
+  .edge-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    fill: rgba(255,255,255,0.2);
+    pointer-events: none;
+  }
+
+  /* signal pulse traveling along edge */
+  .signal-pulse {
+    pointer-events: none;
+  }
+
+  /* node glow on absorption */
+  @keyframes absorb-glow {
+    0%   { r: 10; opacity: 1; }
+    50%  { r: 22; opacity: 0.6; }
+    100% { r: 10; opacity: 0; }
+  }
+
+  .absorb-ring {
+    pointer-events: none;
+    fill: none;
+    stroke-width: 1.5;
+    animation: absorb-glow 0.6s ease-out forwards;
+  }
+
+  /* node dim on ignore */
+  @keyframes ignore-flash {
+    0%   { opacity: 0.8; }
+    50%  { opacity: 0.2; }
+    100% { opacity: 0.8; }
+  }
+  .ignore-flash { animation: ignore-flash 0.4s ease; }
+
+  /* legend */
+  #legend {
+    position: fixed;
+    bottom: 136px;
+    left: 16px;
+    display: flex; flex-direction: column; gap: 6px;
+    z-index: 100;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text2);
+  }
+  .legend-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <span class="logo">World Engine</span>
+  <div class="sep"></div>
+  <div id="status">
+    <div id="status-dot"></div>
+    <span id="status-text">disconnected</span>
+  </div>
+  <span id="node-count">0 nodes · 0 edges</span>
+</div>
+
+<div id="canvas">
+  <svg id="graph-svg">
+    <defs>
+      <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
+        <polygon points="0 0, 6 2, 0 4" fill="rgba(255,255,255,0.15)"/>
+      </marker>
+      <filter id="glow">
+        <feGaussianBlur stdDeviation="3" result="blur"/>
+        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <g id="zoom-group">
+      <g id="edges-g"></g>
+      <g id="nodes-g"></g>
+      <g id="labels-g"></g>
+      <g id="effects-g"></g>
+    </g>
+  </svg>
+</div>
+
+<div id="panel">
+  <div id="panel-header">
+    <span id="panel-title">node inspector</span>
+    <button id="panel-close">✕</button>
+  </div>
+  <div id="panel-body">
+    <div id="props-list"></div>
+    <div id="signal-section">
+      <div class="section-label">Trigger Signal</div>
+      <textarea id="signal-context" rows="3" placeholder="describe what happened..."></textarea>
+      <div class="slider-row">
+        <span class="slider-label">Strength</span>
+        <input type="range" id="strength-slider" min="0.1" max="1.0" step="0.05" value="0.8">
+        <span class="slider-val" id="strength-val">0.80</span>
+      </div>
+      <button id="fire-btn">Fire Signal</button>
+    </div>
+  </div>
+</div>
+
+<div id="log" class="panel-closed">
+  <div class="section-label" style="margin-bottom:6px">Signal Log</div>
+  <div id="log-entries"></div>
+</div>
+
+<div id="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--player)"></div>player</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--npc)"></div>npc</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--item)"></div>item</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--scene)"></div>scene</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--text2)"></div>other</div>
+</div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const WS_URL = 'ws://localhost:3000/ws';
+const NODE_COLORS = {
+  player: '#7c5cbf',
+  npc:    '#1d9e75',
+  item:   '#ba7517',
+  scene:  '#d85a30',
+};
+const nodeColor = t => NODE_COLORS[t] || '#6b8394';
+const NODE_RADIUS = 10;
+const SIGNAL_DURATION = 300; // ms per hop
+
+// ── State ───────────────────────────────────────────────────────────────────
+let nodes = [], edges = [];
+let simulation, svg, zoomGroup;
+let selectedNode = null;
+let ws = null;
+
+// ── D3 Setup ─────────────────────────────────────────────────────────────────
+const svgEl = document.getElementById('graph-svg');
+svg = d3.select(svgEl);
+
+const zoom = d3.zoom()
+  .scaleExtent([0.2, 4])
+  .on('zoom', e => zoomGroup.attr('transform', e.transform));
+
+svg.call(zoom);
+zoomGroup = svg.select('#zoom-group');
+
+const edgesG  = zoomGroup.select('#edges-g');
+const nodesG  = zoomGroup.select('#nodes-g');
+const labelsG = zoomGroup.select('#labels-g');
+const effectsG = zoomGroup.select('#effects-g');
+
+// ── Simulation ───────────────────────────────────────────────────────────────
+function initSimulation(w, h) {
+  simulation = d3.forceSimulation()
+    .force('link', d3.forceLink().id(d => d.id).distance(120).strength(0.4))
+    .force('charge', d3.forceManyBody().strength(-320))
+    .force('center', d3.forceCenter(w / 2, h / 2))
+    .force('collision', d3.forceCollide(NODE_RADIUS + 12));
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+function render() {
+  const w = svgEl.clientWidth;
+  const h = svgEl.clientHeight;
+  if (!simulation) initSimulation(w, h);
+
+  // edges
+  const edgeSel = edgesG.selectAll('.edge-group')
+    .data(edges, d => d.source + '→' + d.target + d.label);
+
+  const edgeEnter = edgeSel.enter().append('g').attr('class', 'edge-group');
+  edgeEnter.append('line')
+    .attr('class', 'edge-line')
+    .attr('marker-end', 'url(#arrowhead)');
+  edgeEnter.append('text')
+    .attr('class', 'edge-label')
+    .attr('text-anchor', 'middle')
+    .text(d => d.label);
+
+  edgeSel.exit().remove();
+
+  const allEdges = edgesG.selectAll('.edge-group');
+
+  // nodes
+  const nodeSel = nodesG.selectAll('.node-group')
+    .data(nodes, d => d.id);
+
+  const nodeEnter = nodeSel.enter().append('g')
+    .attr('class', 'node-group')
+    .call(d3.drag()
+      .on('start', dragStart)
+      .on('drag',  dragged)
+      .on('end',   dragEnd))
+    .on('click', (e, d) => {
+      e.stopPropagation();
+      selectNode(d);
+    });
+
+  nodeEnter.append('circle')
+    .attr('class', 'node-circle')
+    .attr('r', NODE_RADIUS)
+    .attr('fill', d => nodeColor(d.node_type))
+    .attr('stroke', d => nodeColor(d.node_type))
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', 0.5)
+    .attr('fill-opacity', 0.85);
+
+  nodeSel.exit().remove();
+
+  // labels
+  const labelSel = labelsG.selectAll('.node-label')
+    .data(nodes, d => d.id);
+
+  labelSel.enter().append('text')
+    .attr('class', 'node-label')
+    .attr('text-anchor', 'middle')
+    .attr('dy', NODE_RADIUS + 13)
+    .text(d => d.id);
+
+  labelSel.exit().remove();
+
+  // update sim
+  simulation
+    .nodes(nodes)
+    .on('tick', ticked);
+
+  simulation.force('link').links(edges);
+  simulation.alpha(0.5).restart();
+
+  // update counter
+  document.getElementById('node-count').textContent =
+    `${nodes.length} nodes · ${edges.length} edges`;
+
+  // click background deselects
+  svg.on('click', () => closePanel());
+}
+
+function ticked() {
+  edgesG.selectAll('.edge-group').each(function(d) {
+    const g = d3.select(this);
+    const dx = d.target.x - d.source.x;
+    const dy = d.target.y - d.source.y;
+    const len = Math.sqrt(dx*dx + dy*dy) || 1;
+    const tx = d.target.x - (dx/len) * (NODE_RADIUS + 4);
+    const ty = d.target.y - (dy/len) * (NODE_RADIUS + 4);
+
+    g.select('line')
+      .attr('x1', d.source.x).attr('y1', d.source.y)
+      .attr('x2', tx).attr('y2', ty);
+
+    g.select('text')
+      .attr('x', (d.source.x + d.target.x) / 2)
+      .attr('y', (d.source.y + d.target.y) / 2 - 5);
+  });
+
+  nodesG.selectAll('.node-group')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+
+  labelsG.selectAll('.node-label')
+    .attr('x', d => d.x)
+    .attr('y', d => d.y);
+}
+
+// ── Drag ─────────────────────────────────────────────────────────────────────
+function dragStart(e, d) {
+  if (!e.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x; d.fy = d.y;
+}
+function dragged(e, d) { d.fx = e.x; d.fy = e.y; }
+function dragEnd(e, d) {
+  if (!e.active) simulation.alphaTarget(0);
+  d.fx = null; d.fy = null;
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────────────
+function selectNode(d) {
+  selectedNode = d;
+  const panel = document.getElementById('panel');
+  const log   = document.getElementById('log');
+  panel.classList.add('open');
+  log.classList.remove('panel-closed');
+
+  document.getElementById('panel-title').textContent = d.id;
+
+  const props = d.props || {};
+  const list  = document.getElementById('props-list');
+  list.innerHTML = '';
+
+  // type badge
+  const badge = document.createElement('div');
+  badge.className = 'prop-row';
+  badge.innerHTML = `<span class="prop-key">type</span><span class="prop-val" style="color:${nodeColor(d.node_type)}">${d.node_type}</span>`;
+  list.appendChild(badge);
+
+  Object.entries(props).forEach(([k, v]) => {
+    const row = document.createElement('div');
+    row.className = 'prop-row';
+    let valClass = 'prop-val';
+    let display = v;
+    if (typeof v === 'number') { valClass += ' number'; display = v.toFixed(3); }
+    else if (v === true)  { valClass += ' bool-true';  display = 'true'; }
+    else if (v === false) { valClass += ' bool-false'; display = 'false'; }
+    row.innerHTML = `<span class="prop-key">${k}</span><span class="${valClass}">${display}</span>`;
+    list.appendChild(row);
+  });
+}
+
+function closePanel() {
+  document.getElementById('panel').classList.remove('open');
+  document.getElementById('log').classList.add('panel-closed');
+  selectedNode = null;
+}
+
+document.getElementById('panel-close').addEventListener('click', closePanel);
+
+// ── Strength slider ───────────────────────────────────────────────────────────
+document.getElementById('strength-slider').addEventListener('input', function() {
+  document.getElementById('strength-val').textContent = parseFloat(this.value).toFixed(2);
+});
+
+// ── Fire signal ───────────────────────────────────────────────────────────────
+document.getElementById('fire-btn').addEventListener('click', () => {
+  if (!selectedNode || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  const context  = document.getElementById('signal-context').value.trim();
+  const strength = parseFloat(document.getElementById('strength-slider').value);
+
+  if (!context) {
+    document.getElementById('signal-context').focus();
+    return;
+  }
+
+  ws.send(JSON.stringify({
+    origin_id: selectedNode.id,
+    strength,
+    context,
+  }));
+
+  document.getElementById('signal-context').value = '';
+});
+
+// ── Signal animation ──────────────────────────────────────────────────────────
+function animateHop(fromId, toId, absorbed) {
+  const fromNode = nodes.find(n => n.id === fromId);
+  const toNode   = nodes.find(n => n.id === toId);
+  if (!fromNode || !toNode) return;
+
+  const color = absorbed ? '#39ff8a' : '#ff4444';
+
+  // traveling pulse
+  const pulse = effectsG.append('circle')
+    .attr('class', 'signal-pulse')
+    .attr('r', 4)
+    .attr('fill', color)
+    .attr('opacity', 0.9)
+    .attr('cx', fromNode.x)
+    .attr('cy', fromNode.y);
+
+  pulse.transition()
+    .duration(SIGNAL_DURATION)
+    .ease(d3.easeLinear)
+    .attr('cx', toNode.x)
+    .attr('cy', toNode.y)
+    .on('end', () => {
+      pulse.remove();
+
+      if (absorbed) {
+        // absorption ring
+        effectsG.append('circle')
+          .attr('class', 'absorb-ring')
+          .attr('cx', toNode.x).attr('cy', toNode.y)
+          .attr('r', NODE_RADIUS)
+          .attr('stroke', color)
+          .on('animationend', function() { d3.select(this).remove(); });
+
+        // briefly brighten target node
+        nodesG.selectAll('.node-group')
+          .filter(d => d.id === toId)
+          .select('circle')
+          .transition().duration(200)
+          .attr('fill-opacity', 1)
+          .attr('stroke-opacity', 1)
+          .transition().duration(400)
+          .attr('fill-opacity', 0.85)
+          .attr('stroke-opacity', 0.5);
+      } else {
+        // dim flash on ignore
+        nodesG.selectAll('.node-group')
+          .filter(d => d.id === toId)
+          .select('circle')
+          .transition().duration(150)
+          .attr('fill-opacity', 0.2)
+          .transition().duration(150)
+          .attr('fill-opacity', 0.85);
+      }
+    });
+
+  // highlight the edge
+  edgesG.selectAll('.edge-group')
+    .filter(d => d.source.id === fromId && d.target.id === toId)
+    .select('line')
+    .transition().duration(SIGNAL_DURATION)
+    .attr('stroke', color)
+    .attr('stroke-opacity', 0.8)
+    .attr('stroke-width', 2)
+    .transition().duration(600)
+    .attr('stroke', 'rgba(255,255,255,0.08)')
+    .attr('stroke-opacity', 1)
+    .attr('stroke-width', 1);
+}
+
+// ── Signal log ────────────────────────────────────────────────────────────────
+function logHop(msg) {
+  const entries = document.getElementById('log-entries');
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  const time = new Date().toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  el.innerHTML = `
+    <span class="log-time">${time}</span>
+    <span class="log-from">${msg.from}</span>
+    <span style="color:var(--text2)">→</span>
+    <span class="log-to">${msg.to}</span>
+    <span class="log-strength">${msg.strength.toFixed(2)}</span>
+    <span class="log-absorbed ${msg.absorbed ? 'yes' : 'no'}">${msg.absorbed ? 'absorbed' : 'ignored'}</span>
+    <span class="log-context">${msg.context}</span>
+  `;
+  entries.prepend(el);
+  // keep log bounded
+  while (entries.children.length > 40) entries.removeChild(entries.lastChild);
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    document.getElementById('status-dot').classList.add('connected');
+    document.getElementById('status-text').textContent = 'connected';
+  };
+
+  ws.onclose = () => {
+    document.getElementById('status-dot').classList.remove('connected');
+    document.getElementById('status-text').textContent = 'reconnecting...';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {
+    document.getElementById('status-text').textContent = 'error';
+  };
+
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.type === 'snapshot') {
+      // build nodes and edges from snapshot
+      const nodeMap = {};
+      nodes = msg.nodes.map(n => {
+        const existing = nodes.find(x => x.id === n.id);
+        const node = existing
+          ? Object.assign(existing, n)
+          : { ...n, x: Math.random() * svgEl.clientWidth, y: Math.random() * svgEl.clientHeight };
+        nodeMap[n.id] = node;
+        return node;
+      });
+
+      edges = msg.edges.map(e => ({
+        source: e.source,
+        target: e.target,
+        label:  e.label,
+        affinity: e.affinity,
+      }));
+
+      render();
+    }
+
+    if (msg.type === 'signal_hop') {
+      animateHop(msg.from, msg.to, msg.absorbed);
+      logHop(msg);
+    }
+  };
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  if (simulation) {
+    simulation.force('center', d3.forceCenter(
+      svgEl.clientWidth / 2,
+      svgEl.clientHeight / 2
+    ));
+    simulation.alpha(0.1).restart();
+  }
+});
+
+connect();
+</script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 use crate::signal::EventSignal;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ESNode {
     pub node_type: String,
     pub id: String,
@@ -9,7 +10,7 @@ pub struct ESNode {
     pub edges: Vec<ESEdge>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ESEdge {
     pub label: String,
     pub target_type: String,
@@ -17,14 +18,14 @@ pub struct ESEdge {
     pub affinity: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ESValue {
     Text(String),
     Number(f64),
     Bool(bool),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ESGraph {
     pub nodes: HashMap<String, ESNode>,
 }
@@ -146,5 +147,53 @@ impl ESEdge {
             target_id: target_id.to_string(),
             affinity: 1.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_node_creation() {
+        let mut graph = ESGraph::new();
+        
+        let player = ESNode::new("player", "andrew")
+            .with_prop("strength", ESValue::Number(14.0))
+            .with_prop("class", ESValue::Text("Compensated Anarchist".to_string()))
+            .with_prop("alive", ESValue::Bool(true))
+            .with_prop("intelligence", ESValue::Number(14.0))
+            .with_edge("playing", "session", "s1");
+
+        graph.insert(player);
+        
+        // can we get it back?
+        let retrieved = graph.get("player", "andrew");
+        assert!(retrieved.is_some());
+
+        let node = retrieved.unwrap();
+        assert_eq!(node.id, "andrew");
+        assert_eq!(node.node_type, "player");
+
+        // check prop types
+        let strength = node.props.get("strength");
+        let class = node.props.get("class");
+        let alive = node.props.get("alive");
+        assert!(matches!(strength, Some(ESValue::Number(v)) if *v == 14.0));
+        assert!(matches!(class, Some(ESValue::Text(s)) if s == "Compensated Anarchist"));
+        assert!(matches!(alive, Some(ESValue::Bool(b)) if *b == true));
+        
+
+        // check an edge
+        assert_eq!(node.edges.len(), 1);
+        assert_eq!(node.edges[0].label, "playing");
+        assert_eq!(node.edges[0].target_type, "session");
+        assert_eq!(node.edges[0].target_id, "s1");
+    }
+
+    #[test]
+    fn test_missing_node_returns_none() {
+        let graph = ESGraph::new();
+        assert!(graph.get("player", "nobody").is_none());
     }
 }
