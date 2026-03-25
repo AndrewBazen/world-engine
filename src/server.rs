@@ -108,7 +108,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
-async fn build_snapshot(state: &Arc<AppState>) -> ServerMessage {
+pub async fn build_snapshot(state: &Arc<AppState>) -> ServerMessage {
     let graph = state.graph.read().await;
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -134,23 +134,42 @@ async fn build_snapshot(state: &Arc<AppState>) -> ServerMessage {
 
 // handle trigger signal requests from thew browser
 async fn handle_client_message(text: &str, state: &Arc<AppState>) {
-    println!("recieved from client: {}", text);
+    println!("handle_client_message: {}", text);
     #[derive(Deserialize)]
-    struct TriggerSignal {
-        origin_id: String,
-        strength: f64,
-        context: String,
+    #[serde(tag = "type")]
+    enum ClientMessage {
+        #[serde(rename = "trigger_signal")]
+        TriggerSignal {
+            origin_id: String,
+            strength: f64,
+            context: String,
+        },
+        #[serde(rename = "player_action")]
+        PlayerAction {
+            player_id: String,
+            context: String,
+            strength: f64,
+        },
     }
 
-    if let Ok(trigger) = serde_json::from_str::<TriggerSignal>(text) {
-        println!("firing signal from {} with strength {}", trigger.origin_id, trigger.strength);
-        let signal = crate::signal::EventSignal::new(
-            &trigger.origin_id,
-            trigger.strength,
-            &trigger.context,
-        );
-        crate::signal::propagate(state.clone(), signal).await;
-    } else {
-        println!("failed to parse trigger: {}", text);
+    if let Ok(msg) = serde_json::from_str::<ClientMessage>(text) {
+        match msg {
+            ClientMessage::TriggerSignal { origin_id, strength, context } => {
+                let signal = crate::signal::EventSignal::new(
+                    &origin_id, strength, &context
+                );
+                crate::signal::propagate(state.clone(), signal).await;
+            }
+            ClientMessage::PlayerAction { player_id, context, strength } => {
+                let action = crate::agent::PlayerAction {
+                    player_id,
+                    context,
+                    strength,
+                };
+                if let Err(e) = crate::agent::agent_tick(state.clone(), action).await {
+                    eprintln!("agent tick error: {}", e);
+                }
+            }
+        }
     }
 }

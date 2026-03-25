@@ -595,23 +595,31 @@ document.getElementById('strength-slider').addEventListener('input', function() 
 
 // ── Fire signal ───────────────────────────────────────────────────────────────
 document.getElementById('fire-btn').addEventListener('click', () => {
-  if (!selectedNode || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!selectedNode || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  const context  = document.getElementById('signal-context').value.trim();
-  const strength = parseFloat(document.getElementById('strength-slider').value);
+    const context  = document.getElementById('signal-context').value.trim();
+    const strength = parseFloat(document.getElementById('strength-slider').value);
+    if (!context) { document.getElementById('signal-context').focus(); return; }
 
-  if (!context) {
-    document.getElementById('signal-context').focus();
-    return;
-  }
+    if (selectedNode.node_type === 'player') {
+        // player action — goes through AI agent
+        ws.send(JSON.stringify({
+            type: 'player_action',
+            player_id: selectedNode.id,
+            context,
+            strength,
+        }));
+    } else {
+        // non-player node — raw signal
+        ws.send(JSON.stringify({
+            type: 'trigger_signal',
+            origin_id: selectedNode.id,
+            strength,
+            context,
+        }));
+    }
 
-  ws.send(JSON.stringify({
-    origin_id: selectedNode.id,
-    strength,
-    context,
-  }));
-
-  document.getElementById('signal-context').value = '';
+    document.getElementById('signal-context').value = '';
 });
 
 // ── Signal animation ──────────────────────────────────────────────────────────
