@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::collections::VecDeque;
 use crate::graph::{ESGraph, ESNode, ESValue};
 use crate::server::ServerMessage;
 use crate::state::AppState;
@@ -27,58 +28,69 @@ impl EventSignal {
     }
 }
 
-pub async fn propagate(state: Arc<AppState>, signal: EventSignal) {
-    let node = {
-        let graph = state.graph.read().await;
-        match graph.nodes.get(&signal.origin_id) {
-            Some(n) => n.clone(),
-            None => return,
-        }
-    };
+pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) {
+    let mut queue: VecDeque<EventSignal> = VecDeque::new();
+    queue.push_back(initial_signal);
 
-    for edge in &node.edges {
-        let neighbor_id = format!("{}:{}", edge.target_type, edge.target_id);
-
-        if signal.visited.contains(&neighbor_id) { continue; }
-
-        let arriving = signal.strength * edge.affinity;
-
-        if arriving < DISSIPATION_THRESHOLD { continue; }
-
-        let should_absorb = {
+    while let Some(signal) = queue.pop_front() {
+        let node = {
             let graph = state.graph.read().await;
-            graph.nodes.get(&neighbor_id)
-                .map(|n| n.should_absorb(&signal, arriving))
-                .unwrap_or(false)
+            match graph.nodes.get(&signal.origin_id) {
+                Some(n) => n.clone(),
+                None => continue,
+            }
         };
 
-        let _ = state.tx.send(ServerMessage::SignalHop {
-            from: signal.origin_id.clone(),
-            to: neighbor_id.clone(),
-            strength: arriving,
-            context: signal.context.clone(),
-            absorbed: should_absorb,
-        });
+        let mut next_signals = Vec::new();
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+        for edge in &node.edges {
+            let neighbor_id = format!("{}:{}", edge.target_type, edge.target_id);
 
-        if should_absorb {
-            {
-                let mut graph = state.graph.write().await;
-                if let Some(neighbor) = graph.nodes.get_mut(&neighbor_id) {
-                    neighbor.absorb(&signal, arriving);
-                }
-            }
+            if signal.visited.contains(&neighbor_id) { continue; }
 
-            let mut next_signal = EventSignal {
-                origin_id: neighbor_id.clone(),
-                strength: arriving * DECAY_FACTOR,
-                context: signal.context.clone(),
-                visited: signal.visited.clone(),
+            let arriving = signal.strength * edge.affinity;
+            if arriving < DISSIPATION_THRESHOLD { continue; }
+
+            let should_absorb = {
+                let graph = state.graph.read().await;
+                graph.nodes.get(&neighbor_id)
+                    .map(|n| n.should_absorb(&signal, arriving))
+                    .unwrap_or(false)
             };
-            next_signal.visited.insert(neighbor_id);
 
-            Box::pin(propagate(state.clone(), next_signal)).await;
+            let _ = state.tx.send(ServerMessage::SignalHop {
+                from: signal.origin_id.clone(),
+                to: neighbor_id.clone(),
+                strength: arriving,
+                context: signal.context.clone(),
+                absorbed: should_absorb,
+            });
+
+            if should_absorb {
+                {
+                    let mut graph = state.graph.write().await;
+                    if let Some(neighbor) = graph.nodes.get_mut(&neighbor_id) {
+                        neighbor.absorb(&signal, arriving);
+                    }
+                }
+
+                let mut next = EventSignal {
+                    origin_id: neighbor_id.clone(),
+                    strength: arriving * DECAY_FACTOR,
+                    context: signal.context.clone(),
+                    visited: signal.visited.clone(),
+                };
+                next.visited.insert(neighbor_id);
+                next_signals.push(next);
+            }
+        }
+
+        // wait after each hop ring before expanding further
+        tokio::time::sleep(tokio::time::Duration::from_millis(350)).await;
+
+        // add next hop signals to queue
+        for next in next_signals {
+            queue.push_back(next);
         }
     }
 }
