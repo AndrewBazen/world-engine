@@ -752,6 +752,18 @@ function connect() {
       animateHop(msg.from, msg.to, msg.absorbed);
       logHop(msg);
     }
+
+    if (msg.type === 'node_update') {
+      // update node props in our local array
+      const node = nodes.find(n => n.id === msg.id);
+      if (node) {
+        node.props = msg.props;
+        // if this node is currently selected, refresh the panel
+        if (selectedNode && selectedNode.id === msg.id) {
+            selectNode(node);
+        }
+      }
+    }
   };
 }
 

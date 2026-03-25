@@ -71,6 +71,13 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) {
                     let mut graph = state.graph.write().await;
                     if let Some(neighbor) = graph.nodes.get_mut(&neighbor_id) {
                         neighbor.absorb(&signal, arriving);
+
+                        // broadcast updated props after absorption
+                        let props = serde_json::to_value(&neighbor.props).unwrap_or_default();
+                        let _ = state.tx.send(ServerMessage::NodeUpdate { 
+                            id: neighbor_id.clone(), 
+                            props,
+                        });
                     }
                 }
 

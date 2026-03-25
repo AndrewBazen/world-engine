@@ -28,6 +28,11 @@ pub enum ServerMessage {
         context: String,
         absorbed: bool,
     },
+    #[serde(rename = "node_update")]
+    NodeUpdate {
+        id: String,
+        props: serde_json::Value,
+    }
 }
 
 // serializable node for the browser

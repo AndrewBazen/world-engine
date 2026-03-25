@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Serializer};
 use crate::signal::EventSignal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,7 +18,7 @@ pub struct ESEdge {
     pub affinity: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub enum ESValue {
     Text(String),
     Number(f64),
@@ -122,6 +122,7 @@ impl ESNode {
             "activation".to_string(),
             ESValue::Number((current + strength).min(1.0))
         );
+
     }
 
     pub fn get_number(&self, key: &str) -> Option<f64> {
@@ -147,6 +148,18 @@ impl ESEdge {
             target_id: target_id.to_string(),
             affinity: 1.0,
         }
+    }
+}
+
+impl Serialize for ESValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer {
+                match self {
+                    ESValue::Text(s)   => serializer.serialize_str(s),
+                    ESValue::Number(n)    => serializer.serialize_f64(*n),
+                    ESValue::Bool(b)     => serializer.serialize_bool(*b),
+                }
     }
 }
 
