@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::signal::EventSignal;
 
 #[derive(Debug, Clone)]
 pub struct ESNode {
@@ -13,6 +14,7 @@ pub struct ESEdge {
     pub label: String,
     pub target_type: String,
     pub target_id: String,
+    pub affinity: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -41,9 +43,23 @@ impl ESGraph {
         let key = format!("{}:{}", node_type, id);
         self.nodes.get(&key)
     }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut ESNode> {
+        self.nodes.get_mut(key)
+    }
+
+    pub fn get_by_key(&self, key: &str) -> Option<&ESNode> {
+        self.nodes.get(key)
+    }
+    
+    pub fn get_mut_by_key(&mut self, key: &str) -> Option<&mut ESNode> {
+        self.nodes.get_mut(key)
+    }
 }
 
 impl ESNode {
+    // constructor
+
     pub fn new(node_type: &str, id: &str) -> Self {
         ESNode {
             node_type: node_type.to_string(),
@@ -53,16 +69,21 @@ impl ESNode {
         }
     }
 
+    // property methods
+
     pub fn with_prop(mut self, key: &str, value: ESValue) -> Self {
         self.props.insert(key.to_string(), value);
         self
     }
+
+    // edge methods
 
     pub fn with_edge(mut self, label: &str, target_type: &str, target_id: &str) -> Self {
         self.edges.push(ESEdge {
             label: label.to_string(),
             target_type: target_type.to_string(),
             target_id: target_id.to_string(),
+            affinity: 1.0,
         });
         self
     }
@@ -78,6 +99,43 @@ impl ESNode {
     pub fn edges_by_label(&self, label: &str) -> Vec<ESEdge> {
         self.edges.iter().filter(|e| e.label == label).map(|e| e.clone()).collect()
     }
+
+    // Signal methods
+
+    pub fn should_absorb(&self, signal: &EventSignal, strength: f64) -> bool {
+        let threshold = self.get_number("threshold").unwrap_or(0.5);
+        strength >= threshold
+    }
+    
+    pub fn absorb(&mut self, signal: &EventSignal, strength: f64) {
+        self.props.insert(
+            "last_signal_context".to_string(),
+            ESValue::Text(signal.context.clone())
+        );
+        self.props.insert(
+            "last_signal_strength".to_string(),
+            ESValue::Number(strength)
+        );
+        let current = self.get_number("activation").unwrap_or(0.0);
+        self.props.insert(
+            "activation".to_string(),
+            ESValue::Number((current + strength).min(1.0))
+        );
+    }
+
+    pub fn get_number(&self, key: &str) -> Option<f64> {
+        match self.props.get(key) {
+            Some(ESValue::Number(n)) => Some(*n),
+            _ => None,
+        }
+    }
+    
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        match self.props.get(key) {
+            Some(ESValue::Bool(b)) => Some(*b),
+            _ => None,
+        }
+    }
 }
 
 impl ESEdge {
@@ -86,6 +144,7 @@ impl ESEdge {
             label: label.to_string(),
             target_type: target_type.to_string(),
             target_id: target_id.to_string(),
+            affinity: 1.0,
         }
     }
 }

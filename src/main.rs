@@ -2,11 +2,14 @@ mod graph;
 mod query;
 mod parser;
 mod serializer;
+mod signal;
 
 use graph::{ESGraph, ESNode, ESValue};
 use query::{follow, incoming};
 use parser::parse;
 use serializer::serialize;
+use signal::{EventSignal, propagate};
+
 
 
 fn main() {
@@ -178,5 +181,74 @@ mod tests {
         let restored = reparsed.get("player", "andrew").unwrap();
         assert_eq!(original.props.len(), restored.props.len());
         assert_eq!(original.edges.len(), restored.edges.len());
+    }
+
+    #[test]
+    fn test_signal_absorb() {
+        let mut node = ESNode::new("npc", "guard")
+            .with_prop("threshold", ESValue::Number(0.4))
+            .with_prop("activation", ESValue::Number(0.0));
+
+        let signal = EventSignal::new("player:andrew", 0.8, "slipped past the garrison unseen");
+
+        assert!(node.should_absorb(&signal, 0.8));   // above threshold
+        assert!(!node.should_absorb(&signal, 0.2));  // below threshold
+
+        node.absorb(&signal, 0.8);
+
+        assert!(matches!(
+            node.props.get("activation"),
+            Some(ESValue::Number(v)) if *v > 0.0
+        ));
+        assert!(matches!(
+            node.props.get("last_signal_context"),
+            Some(ESValue::Text(s)) if s == "slipped past the garrison unseen"
+        ));
+    }
+
+    #[test]
+    fn test_signal_propagation() {
+        let mut graph = ESGraph::new();
+
+        // player creates a signal
+        let player = ESNode::new("player", "andrew")
+            .with_prop("threshold", ESValue::Number(0.1))
+            .with_edge("near", "npc", "guard");
+
+        // guard cares about this signal
+        let guard = ESNode::new("npc", "guard")
+            .with_prop("threshold", ESValue::Number(0.4))
+            .with_prop("activation", ESValue::Number(0.0))
+            .with_edge("reports_to", "npc", "commander");
+
+        // commander also cares
+        let commander = ESNode::new("npc", "commander")
+            .with_prop("threshold", ESValue::Number(0.3))
+            .with_prop("activation", ESValue::Number(0.0));
+
+        graph.insert(player);
+        graph.insert(guard);
+        graph.insert(commander);
+
+        let signal = EventSignal::new(
+            "player:andrew",
+            0.9,
+            "slipped past the garrison unseen"
+        );
+
+        propagate(&mut graph, signal);
+
+        // guard should have absorbed
+        let guard = graph.get("npc", "guard").unwrap();
+        assert!(guard.get_number("activation").unwrap_or(0.0) > 0.0);
+
+        // commander should have absorbed a weaker signal
+        let commander = graph.get("npc", "commander").unwrap();
+        assert!(commander.get_number("activation").unwrap_or(0.0) > 0.0);
+
+        // commander activation should be weaker than guard
+        let guard_activation = graph.get("npc", "guard").unwrap().get_number("activation").unwrap();
+        let commander_activation = graph.get("npc", "commander").unwrap().get_number("activation").unwrap();
+        assert!(guard_activation > commander_activation);
     }
 }
