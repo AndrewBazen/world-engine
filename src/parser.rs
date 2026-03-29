@@ -29,16 +29,27 @@ pub fn parse(input: &str) -> ESGraph {
         match classify(line) {
             LineType::Empty      => { continue; }
             LineType::Comment    => { continue; }
-            LineType::NodeDecl   => {
+            LineType::NodeDecl => {
                 if let Some(node) = current {
                     graph.insert(node);
                 }
-                let line = line.trim_start_matches("@");
-                let parts: Vec<&str> = line.splitn(2, ":").collect();
+            
+                let line = line.trim_start_matches('@');
+                
+                // check for namespace prefix
+                let (namespace, type_and_id) = if line.contains('/') {
+                    // find the last '/' — everything before is namespace, after is type:id
+                    let last_slash = line.rfind('/').unwrap();
+                    (&line[..last_slash], &line[last_slash + 1..])
+                } else {
+                    ("world", line)
+                };
+            
+                let parts: Vec<&str> = type_and_id.splitn(2, ':').collect();
                 let n_type = parts[0];
                 let n_id = parts[1];
-
-                current = Some(ESNode::new("world", n_type, n_id));
+            
+                current = Some(ESNode::new(namespace, n_type, n_id));
             }
             LineType::Property   => {
                 if let Some(node) = current.as_mut() {
@@ -84,12 +95,21 @@ pub fn parse(input: &str) -> ESGraph {
                 if let Some(node) = current {
                     graph.insert(node);
                 }
-                let new_node = inline_parts[0].trim_start_matches("@");
-                let n_parts: Vec<&str> = new_node.splitn(2, ":").collect();
+                let line = inline_parts[0].trim_start_matches("@");
+
+                // check for namespace prefix
+                let (namespace, type_and_id) = if line.contains('/') {
+                    // find the last '/' — everything before is namespace, after is type:id
+                    let last_slash = line.rfind('/').unwrap();
+                    (&line[..last_slash], &line[last_slash + 1..])
+                } else {
+                    ("world", line)
+                };
+                let n_parts: Vec<&str> = type_and_id.splitn(2, ":").collect();
                 let n_type = n_parts[0];
                 let n_id = n_parts[1];
 
-                current = Some(ESNode::new("world", n_type, n_id));
+                current = Some(ESNode::new(namespace, n_type, n_id));
 
                 // parse the edge
                 if let Some(node) = current.as_mut() {
@@ -215,5 +235,28 @@ mod tests {
         let restored = reparsed.get("world", "player", "andrew").unwrap();
         assert_eq!(original.props.len(), restored.props.len());
         assert_eq!(original.edges.len(), restored.edges.len());
+    }
+
+    #[test]
+    fn test_parse_namespaced_node() {
+        let input = "
+    @inventory/andrew/item:sword
+    name: \"Ancient Sword\"
+    damage: 15
+    ";
+        let graph = parse(input);
+        
+        let key = "inventory/andrew/item:sword";
+        let node = graph.nodes.get(key);
+        assert!(node.is_some());
+        
+        let node = node.unwrap();
+        assert_eq!(node.namespace, "inventory/andrew");
+        assert_eq!(node.node_type, "item");
+        assert_eq!(node.id, "sword");
+        assert!(matches!(
+            node.props.get("damage"),
+            Some(ESValue::Number(v)) if *v == 15.0
+        ));
     }
 }

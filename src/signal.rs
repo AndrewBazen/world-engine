@@ -28,7 +28,79 @@ impl EventSignal {
     }
 }
 
+fn resolve_neighbors(
+    graph: &ESGraph,
+    node: &ESNode,
+    node_id: &str,
+) -> Vec<(String, f64)> {
+    let mut neighbors: Vec<(String, f64)> = Vec::new();
+
+    // 1. explicit edges — only follow edges to world nodes
+    for edge in &node.edges {
+        let id = format!("{}:{}", edge.target_type, edge.target_id);
+        if !ESGraph::is_world_key(&id) { continue; }  // skip private namespace targets
+        if !neighbors.iter().any(|(nid, _)| nid == &id) {
+            neighbors.push((id, edge.affinity));
+        }
+    }
+
+    // 2. location cohesion — world nodes only
+    if let Some(ESValue::Text(loc)) = node.props.get("location") {
+        for (id, n) in &graph.nodes {
+            if id == node_id { continue; }
+            if !ESGraph::is_world_key(id) { continue; }  // skip private namespaces
+            if let Some(ESValue::Text(l)) = n.props.get("location") {
+                if l == loc && !neighbors.iter().any(|(nid, _)| nid == id) {
+                    neighbors.push((id.clone(), 0.7));
+                }
+            }
+        }
+    }
+
+    // 3. faction cohesion — world nodes only
+    let node_factions: Vec<String> = node.edges.iter()
+        .filter(|e| e.label == "member_of")
+        .map(|e| format!("{}:{}", e.target_type, e.target_id))
+        .collect();
+
+    if !node_factions.is_empty() {
+        for (id, n) in &graph.nodes {
+            if id == node_id { continue; }
+            if !ESGraph::is_world_key(id) { continue; }  // skip private namespaces
+            let is_member = n.edges.iter().any(|e| {
+                e.label == "member_of" &&
+                node_factions.contains(
+                    &format!("{}:{}", e.target_type, e.target_id)
+                )
+            });
+            if is_member && !neighbors.iter().any(|(nid, _)| nid == id) {
+                neighbors.push((id.clone(), 0.5));
+            }
+        }
+    }
+
+    // 4. region cohesion — world nodes only
+    if let Some(ESValue::Text(region)) = node.props.get("region") {
+        for (id, n) in &graph.nodes {
+            if id == node_id { continue; }
+            if !ESGraph::is_world_key(id) { continue; }  // skip private namespaces
+            if let Some(ESValue::Text(r)) = n.props.get("region") {
+                if r == region && !neighbors.iter().any(|(nid, _)| nid == id) {
+                    neighbors.push((id.clone(), 0.3));
+                }
+            }
+        }
+    }
+
+    neighbors
+}
+
 pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) {
+    // only propagate from world nodes
+    if !ESGraph::is_world_key(&initial_signal.origin_id) {
+        return;
+    }
+
     let mut queue: VecDeque<EventSignal> = VecDeque::new();
     queue.push_back(initial_signal);
 
@@ -151,7 +223,7 @@ mod tests {
         graph.insert(commander);
 
         // graph moves into state here — use state for everything after
-        let state = AppState::new(graph);
+        let state = AppState::new_without_db(graph);
 
         let signal = EventSignal::new(
             "player:andrew",
@@ -180,5 +252,33 @@ mod tests {
             .unwrap();
 
         assert!(guard_activation > commander_activation);
+    }
+
+    #[test]
+    fn test_propagation_skips_private_nodes() {
+        let mut graph = ESGraph::new();
+
+        let player = ESNode::new("world", "player", "andrew")
+            .with_prop("threshold", ESValue::Number(0.2))
+            .with_prop("activation", ESValue::Number(0.0))
+            .with_prop("location", ESValue::Text("market".to_string()));
+
+        let item = ESNode::new("inventory/andrew", "item", "sword")
+            .with_prop("threshold", ESValue::Number(0.1))
+            .with_prop("activation", ESValue::Number(0.0))
+            .with_prop("location", ESValue::Text("market".to_string()));
+
+        let guard = ESNode::new("world", "npc", "guard")
+            .with_prop("threshold", ESValue::Number(0.4))
+            .with_prop("activation", ESValue::Number(0.0))
+            .with_prop("location", ESValue::Text("market".to_string()));
+
+        graph.insert(player);
+        graph.insert(item);
+        graph.insert(guard);
+
+        // item is in same location but private namespace
+        // signal should reach guard but not item
+        // verify by checking item activation stays 0 after propagation
     }
 }
