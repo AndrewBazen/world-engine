@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_signal_absorb() {
-        let mut node = ESNode::new("npc", "guard")
+        let mut node = ESNode::new("world", "npc", "guard")
             .with_prop("threshold", ESValue::Number(0.4))
             .with_prop("activation", ESValue::Number(0.0));
 
@@ -133,16 +133,16 @@ mod tests {
     async fn test_signal_propagation() {
         let mut graph = ESGraph::new();
 
-        let player = ESNode::new("player", "andrew")
+        let player = ESNode::new("world", "player", "andrew")
             .with_prop("threshold", ESValue::Number(0.1))
             .with_edge("near", "npc", "guard");
 
-        let guard = ESNode::new("npc", "guard")
+        let guard = ESNode::new("world", "npc", "guard")
             .with_prop("threshold", ESValue::Number(0.4))
             .with_prop("activation", ESValue::Number(0.0))
             .with_edge("reports_to", "npc", "commander");
 
-        let commander = ESNode::new("npc", "commander")
+        let commander = ESNode::new("world", "npc", "commander")
             .with_prop("threshold", ESValue::Number(0.3))
             .with_prop("activation", ESValue::Number(0.0));
 
@@ -164,17 +164,17 @@ mod tests {
         // read graph through state after propagation
         let graph = state.graph.read().await;
 
-        let guard = graph.get("npc", "guard").unwrap();
+        let guard = graph.get("world", "npc", "guard").unwrap();
         assert!(guard.get_number("activation").unwrap_or(0.0) > 0.0);
 
-        let commander = graph.get("npc", "commander").unwrap();
+        let commander = graph.get("world", "npc", "commander").unwrap();
         assert!(commander.get_number("activation").unwrap_or(0.0) > 0.0);
 
-        let guard_activation = graph.get("npc", "guard")
+        let guard_activation = graph.get("world", "npc", "guard")
             .unwrap()
             .get_number("activation")
             .unwrap();
-        let commander_activation = graph.get("npc", "commander")
+        let commander_activation = graph.get("world", "npc", "commander")
             .unwrap()
             .get_number("activation")
             .unwrap();

@@ -38,7 +38,7 @@ pub fn parse(input: &str) -> ESGraph {
                 let n_type = parts[0];
                 let n_id = parts[1];
 
-                current = Some(ESNode::new(n_type, n_id));
+                current = Some(ESNode::new("world", n_type, n_id));
             }
             LineType::Property   => {
                 if let Some(node) = current.as_mut() {
@@ -89,7 +89,7 @@ pub fn parse(input: &str) -> ESGraph {
                 let n_type = n_parts[0];
                 let n_id = n_parts[1];
 
-                current = Some(ESNode::new(n_type, n_id));
+                current = Some(ESNode::new("world", n_type, n_id));
 
                 // parse the edge
                 if let Some(node) = current.as_mut() {
@@ -132,7 +132,7 @@ mod tests {
         let graph = parse(input);
         
         assert!(graph.nodes.contains_key("player:andrew"));
-        let retrieved = graph.get("player", "andrew");
+        let retrieved = graph.get("world", "player", "andrew");
         assert!(retrieved.is_some());
 
         let node = retrieved.unwrap();
@@ -151,7 +151,7 @@ mod tests {
 
         let graph = parse(input);
 
-        let retrieved = graph.get("player", "andrew");
+        let retrieved = graph.get("world", "player", "andrew");
         assert!(retrieved.is_some());
 
         let node = retrieved.unwrap();
@@ -170,7 +170,7 @@ mod tests {
     @item:sword
     ";
         let graph = parse(input);
-        let player = graph.get("player", "andrew").unwrap();
+        let player = graph.get("world", "player", "andrew").unwrap();
         assert_eq!(player.edges.len(), 1);
         assert_eq!(player.edges[0].label, "owns");
         assert_eq!(player.edges[0].target_type, "item");
@@ -182,7 +182,7 @@ mod tests {
         let input = "@player:andrew --[owns]--> @item:sword";
         let graph = parse(input);
         
-        let player = graph.get("player", "andrew");
+        let player = graph.get("world", "player", "andrew");
         assert!(player.is_some());
         
         let node = player.unwrap();
@@ -211,8 +211,8 @@ mod tests {
         assert_eq!(graph.nodes.len(), reparsed.nodes.len());
         
         // player should survive the round trip intact
-        let original = graph.get("player", "andrew").unwrap();
-        let restored = reparsed.get("player", "andrew").unwrap();
+        let original = graph.get("world", "player", "andrew").unwrap();
+        let restored = reparsed.get("world", "player", "andrew").unwrap();
         assert_eq!(original.props.len(), restored.props.len());
         assert_eq!(original.edges.len(), restored.edges.len());
     }

@@ -5,7 +5,10 @@ use crate::graph::{ESGraph, ESNode};
 pub fn follow<'a>(graph: &'a ESGraph, node: &ESNode, label: &str) -> Vec<&'a ESNode> {
     node.edges_by_label(label)
         .iter()
-        .filter_map(|e| graph.get(&e.target_type, &e.target_id))
+        .filter_map(|e| {
+            let key = format!("{}:{}", e.target_type, e.target_id);
+            graph.get_by_key(&key)
+        })
         .collect()
 }
 
@@ -25,9 +28,9 @@ mod tests {
     fn test_follow_outgoing_edges() {
         let mut graph = ESGraph::new();
 
-        let player = ESNode::new("player", "andrew")
+        let player = ESNode::new("world", "player", "andrew")
             .with_edge("owns", "item", "sword");
-        let item = ESNode::new("item", "sword");
+        let item = ESNode::new("world", "item", "sword");
 
         graph.insert(player.clone());
         graph.insert(item);
@@ -41,7 +44,7 @@ mod tests {
     #[test]
     fn test_incoming_edges() {
         let mut graph = ESGraph::new();
-        let item = ESNode::new("item", "sword")
+        let item = ESNode::new("world", "item", "sword")
             .with_edge("owned_by", "player", "andrew");
         graph.insert(item);
         let owned_by = incoming(&graph, "player", "andrew", "owned_by");

@@ -5,8 +5,8 @@ use crate::state::AppState;
 use crate::graph::ESGraph;
 use crate::parser::parse;
 
-const OLLAMA_URL: &str = "http://192.168.1.120:11434/api/generate";
-const MODEL: &str = "llama3.1:8b";
+const OLLAMA_URL: &str = "http://localhost:11434/api/generate";
+const PLAYER_MODEL: &str = "llama3.1:8b-instruct-q8_0";
 
 #[derive(Serialize)]
 struct OllamaRequest {
@@ -161,7 +161,7 @@ async fn call_ollama(context: &str) -> Result<String, String> {
     );
 
     let req = OllamaRequest {
-        model: MODEL.to_string(),
+        model: PLAYER_MODEL.to_string(),
         prompt,
         stream: false,
     };
