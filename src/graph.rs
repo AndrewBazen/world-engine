@@ -14,9 +14,11 @@ pub struct ESNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ESEdge {
     pub label: String,
+    pub target_namespace: String,
     pub target_type: String,
     pub target_id: String,
     pub affinity: f64,
+    pub remove: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,9 +156,11 @@ impl ESEdge {
     pub fn new(label: &str, target_type: &str, target_id: &str) -> Self {
         ESEdge {
             label: label.to_string(),
+            target_namespace: "world".to_string(),
             target_type: target_type.to_string(),
             target_id: target_id.to_string(),
             affinity: 1.0,
+            remove: false,
         }
     }
 }

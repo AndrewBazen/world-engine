@@ -1,141 +1,184 @@
-use surrealdb::Surreal;
-use surrealdb::engine::local::{Db, RocksDb};
-use surrealdb::opt::auth::Root;
+use redb::{Database, TableDefinition, ReadableTable};
+use crate::graph::{ESGraph, ESNode, ESEdge, ESValue};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
-use crate::graph::{ESGraph, ESNode, ESEdge, ESValue};
 
-pub type Database = Surreal<Db>;
+const NODES: TableDefinition<&str, &str> = TableDefinition::new("nodes");
+const EDGES: TableDefinition<&str, &str> = TableDefinition::new("edges");
 
-// serializable versions of your graph types for SurrealDB
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DbNode {
-    pub key: String,
-    pub namespace: String,
-    pub node_type: String,
-    pub id: String,
-    pub props: HashMap<String, DbValue>,
+#[derive(Serialize, Deserialize)]
+struct StoredNode {
+    namespace: String,
+    node_type: String,
+    id: String,
+    props: HashMap<String, StoredValue>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DbEdge {
-    pub from_key: String,
-    pub label: String,
-    pub target_type: String,
-    pub target_id: String,
-    pub affinity: f64,
+fn default_world() -> String { "world".to_string() }
+
+#[derive(Serialize, Deserialize)]
+struct StoredEdge {
+    label: String,
+    #[serde(default = "default_world")]
+    target_namespace: String,
+    target_type: String,
+    target_id: String,
+    affinity: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "t", content = "v")]
-pub enum DbValue {
+enum StoredValue {
     Text(String),
     Number(f64),
     Bool(bool),
 }
 
-impl From<&ESValue> for DbValue {
+impl From<&ESValue> for StoredValue {
     fn from(v: &ESValue) -> Self {
         match v {
-            ESValue::Text(s)   => DbValue::Text(s.clone()),
-            ESValue::Number(n) => DbValue::Number(*n),
-            ESValue::Bool(b)   => DbValue::Bool(*b),
+            ESValue::Text(s)   => StoredValue::Text(s.clone()),
+            ESValue::Number(n) => StoredValue::Number(*n),
+            ESValue::Bool(b)   => StoredValue::Bool(*b),
         }
     }
 }
 
-impl From<DbValue> for ESValue {
-    fn from(v: DbValue) -> Self {
+impl From<StoredValue> for ESValue {
+    fn from(v: StoredValue) -> Self {
         match v {
-            DbValue::Text(s)   => ESValue::Text(s),
-            DbValue::Number(n) => ESValue::Number(n),
-            DbValue::Bool(b)   => ESValue::Bool(b),
+            StoredValue::Text(s)   => ESValue::Text(s),
+            StoredValue::Number(n) => ESValue::Number(n),
+            StoredValue::Bool(b)   => ESValue::Bool(b),
         }
     }
 }
 
-pub async fn connect() -> Result<Database, surrealdb::Error> {
-    let db = Surreal::new::<RocksDb>("data/world.db").await?;
-    db.use_ns("world_engine").use_db("world").await?;
+pub fn connect() -> Result<Database, redb::Error> {
+    std::fs::create_dir_all("data").ok();
+    let db = Database::create("data/world.db")?;
+    
+    // ensure tables exist
+    let write_txn = db.begin_write()?;
+    write_txn.open_table(NODES)?;
+    write_txn.open_table(EDGES)?;
+    write_txn.commit()?;
+    
     Ok(db)
 }
 
-pub async fn save_node(db: &Database, node: &ESNode, key: &str) -> Result<(), surrealdb::Error> {
-    let db_node = DbNode {
-        key: key.to_string(),
+pub fn save_node(db: &Database, key: &str, node: &ESNode) -> Result<(), redb::Error> {
+    let stored = StoredNode {
         namespace: node.namespace.clone(),
         node_type: node.node_type.clone(),
         id: node.id.clone(),
         props: node.props.iter()
-            .map(|(k, v)| (k.clone(), DbValue::from(v)))
+            .map(|(k, v)| (k.clone(), StoredValue::from(v)))
             .collect(),
     };
 
-    db.upsert::<Option<DbNode>>(("nodes", key)).content(db_node).await?;
+    let node_json = serde_json::to_string(&stored).unwrap();
 
-    // save edges separately
-    // delete existing edges for this node first
-    db.query("DELETE edge WHERE from_key = $key")
-        .bind(("key", key.to_string()))
-        .await?;
+    // save edges as a separate entry
+    let stored_edges: Vec<StoredEdge> = node.edges.iter().map(|e| StoredEdge {
+        label: e.label.clone(),
+        target_namespace: e.target_namespace.clone(),
+        target_type: e.target_type.clone(),
+        target_id: e.target_id.clone(),
+        affinity: e.affinity,
+    }).collect();
+    let edges_json = serde_json::to_string(&stored_edges).unwrap();
 
-    for edge in &node.edges {
-        let db_edge = DbEdge {
-            from_key: key.to_string(),
-            label: edge.label.clone(),
-            target_type: edge.target_type.clone(),
-            target_id: edge.target_id.clone(),
-            affinity: edge.affinity,
-        };
-        db.create::<Option<DbEdge>>("edge").content(db_edge).await?;
+    let write_txn = db.begin_write()?;
+    {
+        let mut node_table = write_txn.open_table(NODES)?;
+        node_table.insert(key, node_json.as_str())?;
+
+        let mut edge_table = write_txn.open_table(EDGES)?;
+        edge_table.insert(key, edges_json.as_str())?;
     }
+    write_txn.commit()?;
 
     Ok(())
 }
 
-pub async fn load_graph(db: &Database) -> Result<ESGraph, surrealdb::Error> {
+pub fn save_graph(db: &Database, graph: &ESGraph) -> Result<(), redb::Error> {
+    let write_txn = db.begin_write()?;
+    {
+        let mut node_table = write_txn.open_table(NODES)?;
+        let mut edge_table = write_txn.open_table(EDGES)?;
+
+        for (key, node) in &graph.nodes {
+            let stored = StoredNode {
+                namespace: node.namespace.clone(),
+                node_type: node.node_type.clone(),
+                id: node.id.clone(),
+                props: node.props.iter()
+                    .map(|(k, v)| (k.clone(), StoredValue::from(v)))
+                    .collect(),
+            };
+            let node_json = serde_json::to_string(&stored).unwrap();
+            node_table.insert(key.as_str(), node_json.as_str())?;
+
+            let stored_edges: Vec<StoredEdge> = node.edges.iter().map(|e| StoredEdge {
+                label: e.label.clone(),
+                target_namespace: e.target_namespace.clone(),
+                target_type: e.target_type.clone(),
+                target_id: e.target_id.clone(),
+                affinity: e.affinity,
+            }).collect();
+            let edges_json = serde_json::to_string(&stored_edges).unwrap();
+            edge_table.insert(key.as_str(), edges_json.as_str())?;
+        }
+    }
+    write_txn.commit()?;
+    Ok(())
+}
+
+pub fn load_graph(db: &Database) -> Result<ESGraph, redb::Error> {
     let mut graph = ESGraph::new();
 
-    // load all nodes
-    let db_nodes: Vec<DbNode> = db.select("nodes").await?;
+    let read_txn = db.begin_read()?;
+    let node_table = read_txn.open_table(NODES)?;
+    let edge_table = read_txn.open_table(EDGES)?;
 
-    // load all edges
-    let db_edges: Vec<DbEdge> = db.select("edge").await?;
+    for entry in node_table.iter()? {
+        let (key, value) = entry?;
+        let key_str = key.value();
+        let json = value.value();
 
-    // build edge map by from_key
-    let mut edge_map: HashMap<String, Vec<DbEdge>> = HashMap::new();
-    for edge in db_edges {
-        edge_map.entry(edge.from_key.clone()).or_default().push(edge);
-    }
+        if let Ok(stored) = serde_json::from_str::<StoredNode>(json) {
+            let mut node = ESNode::new(
+                &stored.namespace,
+                &stored.node_type,
+                &stored.id,
+            );
 
-    // reconstruct ESGraph
-    for db_node in db_nodes {
-        let mut node = ESNode::new(&db_node.namespace, &db_node.node_type, &db_node.id);
-
-        for (k, v) in db_node.props {
-            node.props.insert(k, ESValue::from(v));
-        }
-
-        if let Some(edges) = edge_map.get(&db_node.key) {
-            for e in edges {
-                node.edges.push(ESEdge {
-                    label: e.label.clone(),
-                    target_type: e.target_type.clone(),
-                    target_id: e.target_id.clone(),
-                    affinity: e.affinity,
-                });
+            for (k, v) in stored.props {
+                node.props.insert(k, ESValue::from(v));
             }
-        }
 
-        graph.insert(node);
+            // load edges
+            if let Ok(edge_entry) = edge_table.get(key_str) {
+                if let Some(edge_value) = edge_entry {
+                    if let Ok(edges) = serde_json::from_str::<Vec<StoredEdge>>(edge_value.value()) {
+                        for e in edges {
+                            node.edges.push(ESEdge {
+                                label: e.label,
+                                target_namespace: e.target_namespace,
+                                target_type: e.target_type,
+                                target_id: e.target_id,
+                                affinity: e.affinity,
+                                remove: false,
+                            });
+                        }
+                    }
+                }
+            }
+
+            graph.nodes.insert(key_str.to_string(), node);
+        }
     }
 
     Ok(graph)
-}
-
-pub async fn save_graph(db: &Database, graph: &ESGraph) -> Result<(), surrealdb::Error> {
-    for (key, node) in &graph.nodes {
-        save_node(db, node, key).await?;
-    }
-    Ok(())
 }

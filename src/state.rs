@@ -1,14 +1,15 @@
 // src/state.rs
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, RwLock};
 use crate::graph::ESGraph;
 use crate::server::ServerMessage;
-use crate::db::Database;
+use redb::Database;
+
 
 pub struct AppState {
     pub graph: RwLock<ESGraph>,
     pub tx: broadcast::Sender<ServerMessage>,
-    pub db: Option<Database>,
+    pub db: Option<Arc<Mutex<Database>>>,
 }
 
 impl AppState {
@@ -17,7 +18,7 @@ impl AppState {
         Arc::new(AppState {
             graph: RwLock::new(graph),
             tx,
-            db: Some(db),
+            db: Some(Arc::new(Mutex::new(db))),
         })
     }
 

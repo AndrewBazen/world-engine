@@ -5,114 +5,98 @@ mod serializer;
 mod signal;
 mod server;
 mod state;
+mod stats;
 mod agent;
 mod db;
 
+use graph::{ESGraph, ESNode};
 use parser::parse;
 use state::AppState;
 
-#[tokio::main]
-async fn main() {
-    // connect to database
-    let database = db::connect().await.expect("failed to connect to db");
+const WORLD_FILE: &str = "data/world.es";
 
-    // try loading world from db, fall back to fresh world
-    let world = match db::load_graph(&database).await {
+fn load_world_dir(path: &str) -> ESGraph {
+    let mut combined = ESGraph::new();
+    
+    load_es_files_recursive(path, &mut combined);
+    
+    combined
+}
+
+fn load_es_files_recursive(dir: &str, graph: &mut ESGraph) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            load_es_files_recursive(path.to_str().unwrap_or(""), graph);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("es") {
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| {
+                    eprintln!("failed to read {:?}: {}", path, e);
+                    String::new()
+                });
+            let patch = parse(&content);
+            // merge into combined graph
+            for (key, node) in patch.nodes {
+                graph.nodes.insert(key, node);
+            }
+            println!("loaded {:?}", path);
+        }
+    }
+}
+
+fn main_setup() -> (ESGraph, redb::Database) {
+    let db = db::connect().expect("failed to connect to db");
+    
+    let graph = match db::load_graph(&db) {
         Ok(g) if !g.nodes.is_empty() => {
             println!("loaded world from db ({} nodes)", g.nodes.len());
             g
         }
         _ => {
-            println!("creating fresh world");
-            let fresh = parse("
-@player:andrew
-  threshold: 0.2
-  activation: 0.0
-  courage: 14
-  class: \"Compensated Anarchist\"
-  narrative: \"A newcomer. No history yet.\"
-  dominant_trait: \"unknown\"
-  notable_actions: \"none\"
-  location: \"market_district\"
-  region: \"mirefall_city\"
-
-@npc:guard
-  threshold: 0.4
-  activation: 0.0
-  disposition: neutral
-  awareness: 0.7
-  personality: vigilant
-  location: \"market_district\"
-  region: \"mirefall_city\"
-  reaction_threshold: 0.4
-  --[reports_to]--> @npc:commander
-  --[knows]--> @npc:merchant
-  --[member_of]--> @faction:garrison
-
-@npc:merchant
-  threshold: 0.6
-  activation: 0.0
-  disposition: neutral
-  awareness: 0.3
-  inventory_size: large
-  personality: cautious
-  location: \"market_district\"
-  region: \"mirefall_city\"
-  reaction_threshold: 0.65
-  --[member_of]--> @faction:trade_guild
-  --[knows]--> @npc:guard
-
-@npc:commander
-  threshold: 0.3
-  activation: 0.0
-  disposition: neutral
-  awareness: 0.8
-  personality: authoritative
-  location: \"garrison_corridor\"
-  region: \"mirefall_city\"
-  reaction_threshold: 0.35
-  --[commands]--> @faction:garrison
-  --[member_of]--> @faction:garrison
-
-@npc:farmer
-  threshold: 0.5
-  activation: 0.0
-  disposition: neutral
-  awareness: 0.2
-  personality: simple
-  location: \"southern_fields\"
-  region: \"mirefall_city\"
-  reaction_threshold: 0.8
-
-@faction:garrison
-  threshold: 0.3
-  activation: 0.0
-  region: \"mirefall_city\"
-
-@faction:trade_guild
-  threshold: 0.7
-  activation: 0.0
-  region: \"mirefall_city\"
-
-@inventory/andrew/item:worn_dagger
-  name: \"Worn Dagger\"
-  damage: 3
-  rarity: common
-  --[owned_by]--> @player:andrew
-
-@abilities/andrew/ability:stealth
-  name: \"Stealth\"
-  level: 1
-  description: \"Move unseen through shadows\"
-");
-            // save fresh world to db
-            db::save_graph(&database, &fresh).await
-                .expect("failed to save initial world");
+            println!("loading fresh world from data/world/");
+            let fresh = load_world_dir("data/world");
+            db::save_graph(&db, &fresh).expect("failed to save initial world");
             fresh
         }
     };
 
-    let state = AppState::new(world, database);
+    (graph, db)
+}
 
+#[tokio::main]
+async fn main() {
+    let (mut world, db) = main_setup();
+
+    // generate missing stat blocks before creating state
+    let new_npcs: Vec<(String, ESNode)> = world.nodes.iter()
+        .filter(|(k, _)| k.starts_with("npc:"))
+        .filter(|(k, _)| {
+            let npc_id = k.split(':').nth(1).unwrap_or("");
+            !crate::stats::has_stat_block(&world, npc_id)
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // in main, before generating stat blocks
+    println!("checking for existing stat blocks...");
+    let existing_stats = world.nodes.keys()
+        .filter(|k| k.starts_with("stats/"))
+        .count();
+    println!("found {} existing stat nodes", existing_stats);
+
+    for (key, node) in new_npcs {
+        let npc_id = key.split(':').nth(1).unwrap_or("").to_string();
+        let stats = crate::stats::generate_stats(&node);
+        crate::stats::write_stat_block(&mut world, &npc_id, &stats);
+        println!("generated stat block for {}", npc_id);
+    }
+
+    // now world moves into state — all stat blocks already written
+    let state = AppState::new(world, db);
     server::start(state).await;
 }

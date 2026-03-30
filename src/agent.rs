@@ -2,7 +2,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::state::AppState;
-use crate::graph::{ESGraph,ESEdge};
+use crate::graph::{ESGraph, ESEdge};
 use crate::parser::parse;
 
 const OLLAMA_URL: &str = "http://localhost:11434/api/generate";
@@ -46,11 +46,14 @@ pub async fn agent_tick(
         .to_string();
 
     let inventory_ns = format!("inventory/{}", player_name);
+    let equipped_ns  = format!("equipped/{}", player_name);
     let abilities_ns = format!("abilities/{}", player_name);
-    let quests_ns = format!("quests/{}", player_name);
+    let quests_ns    = format!("quests/{}", player_name);
+
     let allowed = vec![
         "world",
         inventory_ns.as_str(),
+        equipped_ns.as_str(),
         abilities_ns.as_str(),
         quests_ns.as_str(),
     ];
@@ -62,57 +65,110 @@ pub async fn agent_tick(
     let patch = parse(&patch_text);
     println!("patch parsed, {} nodes", patch.nodes.len());
 
-    // ── write block — lock acquired and released here ──────────────
+    // ── write block ────────────────────────────────────────────────
     {
         let mut graph = state.graph.write().await;
         merge_patch(&mut graph, patch, &allowed);
         println!("patch merged");
 
-        let inventory_prefix = format!("inventory/{}/", player_name);
-        let quests_prefix = format!("quests/{}/", player_name);
+        // fix orphaned items — ensure they're connected to inventory container
+        let inventory_key    = format!("inventory/{}/inventory:items", player_name);
+        let inventory_prefix = format!("inventory/{}/item:", player_name);
+        let quests_key       = format!("quests/{}/quests:active", player_name);
+        let quests_prefix    = format!("quests/{}/quest:", player_name);
 
-        let orphaned_inventory: Vec<String> = graph.nodes.iter()
-            .filter(|(k, v)| {
-                k.starts_with(&inventory_prefix) &&
-                !v.edges.iter().any(|e| e.label == "owned_by")
+        let orphaned_items: Vec<String> = graph.nodes.keys()
+            .filter(|k| k.starts_with(&inventory_prefix))
+            .filter(|k| {
+                graph.nodes.get(&inventory_key)
+                    .map(|inv| !inv.edges.iter().any(|e| {
+                        e.label == "contains" &&
+                        format!("inventory/{}/{}:{}", player_name, e.target_type, e.target_id) == **k
+                    }))
+                    .unwrap_or(true)
             })
-            .map(|(k, _)| k.clone())
+            .cloned()
             .collect();
 
-        let orphaned_quests: Vec<String> = graph.nodes.iter()
-            .filter(|(k, v)| {
-                k.starts_with(&quests_prefix) &&
-                !v.edges.iter().any(|e| e.label == "assigned_to")
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
-
-        for key in orphaned_inventory {
-            if let Some(node) = graph.nodes.get_mut(&key) {
-                node.edges.push(ESEdge::new("owned_by", "player", &player_name));
-                println!("fixed orphaned inventory node: {}", key);
+        for key in orphaned_items {
+            let parts: Vec<&str> = key
+                .split('/')
+                .last()
+                .unwrap_or("")
+                .splitn(2, ':')
+                .collect();
+            if parts.len() == 2 {
+                if let Some(inventory) = graph.nodes.get_mut(&inventory_key) {
+                    inventory.edges.push(ESEdge::new("contains", parts[0], parts[1]));
+                    println!("fixed orphaned item: {}", key);
+                }
             }
         }
+
+        let orphaned_quests: Vec<String> = graph.nodes.keys()
+            .filter(|k| k.starts_with(&quests_prefix))
+            .filter(|k| {
+                graph.nodes.get(&quests_key)
+                    .map(|q| !q.edges.iter().any(|e| {
+                        e.label == "contains" &&
+                        format!("quests/{}/{}:{}", player_name, e.target_type, e.target_id) == **k
+                    }))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
 
         for key in orphaned_quests {
-            if let Some(node) = graph.nodes.get_mut(&key) {
-                node.edges.push(ESEdge::new("assigned_to", "player", &player_name));
-                println!("fixed orphaned quest node: {}", key);
+            let parts: Vec<&str> = key
+                .split('/')
+                .last()
+                .unwrap_or("")
+                .splitn(2, ':')
+                .collect();
+            if parts.len() == 2 {
+                if let Some(quests) = graph.nodes.get_mut(&quests_key) {
+                    quests.edges.push(ESEdge::new("contains", parts[0], parts[1]));
+                    println!("fixed orphaned quest: {}", key);
+                }
             }
         }
-    } // ── write lock released here ───────────────────────────────────
+    } // ── write lock released ────────────────────────────────────────
 
-    // simpler version — save everything after agent tick
+    // auto-generate stat blocks for new NPCs
+    let new_npcs: Vec<(String, crate::graph::ESNode)> = {
+        let graph = state.graph.read().await;
+        graph.nodes.iter()
+            .filter(|(k, _)| k.starts_with("npc:"))
+            .filter(|(k, _)| {
+                let npc_id = k.split(':').nth(1).unwrap_or("");
+                !crate::stats::has_stat_block(&graph, npc_id)
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+
+    if !new_npcs.is_empty() {
+        let mut graph = state.graph.write().await;
+        for (key, node) in new_npcs {
+            let npc_id = key.split(':').nth(1).unwrap_or("").to_string();
+            let stats = crate::stats::generate_stats(&node);
+            crate::stats::write_stat_block(&mut graph, &npc_id, &stats);
+            println!("generated stat block for {}", npc_id);
+        }
+    }
+
+    // persist
     {
         let graph = state.graph.read().await;
         if let Some(db) = &state.db {
-            if let Err(e) = crate::db::save_graph(db, &graph).await {
+            let db = db.lock().unwrap();
+            if let Err(e) = crate::db::save_graph(&*db, &graph) {
                 eprintln!("failed to persist world: {}", e);
             }
         }
     }
 
-    // now propagate and snapshot can acquire the lock
+    // propagate signal
     let signal = crate::signal::EventSignal::new(
         &action.player_id,
         action.strength,
@@ -127,6 +183,14 @@ pub async fn agent_tick(
     Ok(())
 }
 
+fn format_value(v: &crate::graph::ESValue) -> String {
+    match v {
+        crate::graph::ESValue::Text(s)   => s.clone(),
+        crate::graph::ESValue::Number(n) => n.to_string(),
+        crate::graph::ESValue::Bool(b)   => b.to_string(),
+    }
+}
+
 fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
     let player = match graph.nodes.get(player_id) {
         Some(n) => n,
@@ -134,58 +198,98 @@ fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
     };
 
     let mut ctx = String::new();
+    let player_name = player_id.split(':').nth(1).unwrap_or(player_id);
 
-    // world identity
+    // player state
     ctx.push_str("PLAYER STATE\n");
     ctx.push_str(&format!("id: {}\n", player_id));
     for (k, v) in &player.props {
-        let display = match v {
-            crate::graph::ESValue::Text(s)   => s.clone(),
-            crate::graph::ESValue::Number(n) => n.to_string(),
-            crate::graph::ESValue::Bool(b)   => b.to_string(),
-        };
-        ctx.push_str(&format!("  {}: {}\n", k, display));
+        ctx.push_str(&format!("  {}: {}\n", k, format_value(v)));
     }
 
-    // inventory namespace
-    let player_name = player_id.split(':').nth(1).unwrap_or(player_id);
-    let inventory_prefix = format!("inventory/{}/", player_name);
-    let inventory_nodes: Vec<_> = graph.nodes.iter()
-        .filter(|(k, _)| k.starts_with(&inventory_prefix))
-        .collect();
+    // inventory — follow container
+    let inventory_key = format!("inventory/{}/inventory:items", player_name);
+    if let Some(inv) = graph.nodes.get(&inventory_key) {
+        let items: Vec<_> = inv.edges.iter()
+            .filter(|e| e.label == "contains")
+            .filter_map(|e| {
+                let k = format!("inventory/{}/{}:{}", player_name, e.target_type, e.target_id);
+                graph.nodes.get(&k).map(|n| (k, n))
+            })
+            .collect();
 
-    if !inventory_nodes.is_empty() {
-        ctx.push_str("\nINVENTORY\n");
-        for (key, node) in &inventory_nodes {
-            ctx.push_str(&format!("  {}\n", key));
-            for (k, v) in &node.props {
-                let display = match v {
-                    crate::graph::ESValue::Text(s)   => s.clone(),
-                    crate::graph::ESValue::Number(n) => n.to_string(),
-                    crate::graph::ESValue::Bool(b)   => b.to_string(),
-                };
-                ctx.push_str(&format!("    {}: {}\n", k, display));
+        if !items.is_empty() {
+            ctx.push_str("\nINVENTORY\n");
+            for (key, node) in &items {
+                ctx.push_str(&format!("  {}\n", key));
+                for (k, v) in &node.props {
+                    ctx.push_str(&format!("    {}: {}\n", k, format_value(v)));
+                }
             }
         }
     }
 
-    // abilities namespace
-    let abilities_prefix = format!("abilities/{}/", player_name);
-    let ability_nodes: Vec<_> = graph.nodes.iter()
-        .filter(|(k, _)| k.starts_with(&abilities_prefix))
-        .collect();
+    // equipped — follow container
+    let equipped_key = format!("equipped/{}/equipped:slots", player_name);
+    if let Some(equipped) = graph.nodes.get(&equipped_key) {
+        let slots: Vec<_> = equipped.edges.iter()
+            .filter_map(|e| {
+                let k = format!("inventory/{}/{}:{}", player_name, e.target_type, e.target_id);
+                graph.nodes.get(&k).map(|n| (e.label.clone(), k, n))
+            })
+            .collect();
 
-    if !ability_nodes.is_empty() {
-        ctx.push_str("\nABILITIES\n");
-        for (key, node) in &ability_nodes {
-            ctx.push_str(&format!("  {}\n", key));
-            for (k, v) in &node.props {
-                let display = match v {
-                    crate::graph::ESValue::Text(s)   => s.clone(),
-                    crate::graph::ESValue::Number(n) => n.to_string(),
-                    crate::graph::ESValue::Bool(b)   => b.to_string(),
-                };
-                ctx.push_str(&format!("    {}: {}\n", k, display));
+        if !slots.is_empty() {
+            ctx.push_str("\nEQUIPPED\n");
+            for (slot, key, node) in &slots {
+                ctx.push_str(&format!("  {} [{}]\n", key, slot));
+                for (k, v) in &node.props {
+                    ctx.push_str(&format!("    {}: {}\n", k, format_value(v)));
+                }
+            }
+        }
+    }
+
+    // abilities — follow container
+    let abilities_key = format!("abilities/{}/abilities:known", player_name);
+    if let Some(ab) = graph.nodes.get(&abilities_key) {
+        let abilities: Vec<_> = ab.edges.iter()
+            .filter(|e| e.label == "contains")
+            .filter_map(|e| {
+                let k = format!("abilities/{}/{}:{}", player_name, e.target_type, e.target_id);
+                graph.nodes.get(&k).map(|n| (k, n))
+            })
+            .collect();
+
+        if !abilities.is_empty() {
+            ctx.push_str("\nABILITIES\n");
+            for (key, node) in &abilities {
+                ctx.push_str(&format!("  {}\n", key));
+                for (k, v) in &node.props {
+                    ctx.push_str(&format!("    {}: {}\n", k, format_value(v)));
+                }
+            }
+        }
+    }
+
+    // quests — follow container
+    let quests_key = format!("quests/{}/quests:active", player_name);
+    if let Some(q) = graph.nodes.get(&quests_key) {
+        let quests: Vec<_> = q.edges.iter()
+            .filter(|e| e.label == "contains")
+            .filter_map(|e| {
+                let k = format!("quests/{}/{}:{}", player_name, e.target_type, e.target_id);
+                graph.nodes.get(&k).map(|n| (k, n))
+            })
+            .collect();
+
+        if !quests.is_empty() {
+            ctx.push_str("\nQUESTS\n");
+            for (key, node) in &quests {
+                ctx.push_str(&format!("  {}\n", key));
+                for (k, v) in &node.props {
+                    ctx.push_str(&format!("    {}: {}\n", k, format_value(v)));
+                }
             }
         }
     }
@@ -201,25 +305,20 @@ fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
 
     for (id, node) in &graph.nodes {
         if id == player_id { continue; }
-        if !ESGraph::is_world_key(id) { continue; }  // world nodes only
+        if !ESGraph::is_world_key(id) { continue; }
         if let Some(crate::graph::ESValue::Text(loc)) = node.props.get("location") {
             if loc == &player_location {
                 ctx.push_str(&format!("  {}\n", id));
                 for (k, v) in &node.props {
-                    let display = match v {
-                        crate::graph::ESValue::Text(s)   => s.clone(),
-                        crate::graph::ESValue::Number(n) => n.to_string(),
-                        crate::graph::ESValue::Bool(b)   => b.to_string(),
-                    };
-                    ctx.push_str(&format!("    {}: {}\n", k, display));
+                    ctx.push_str(&format!("    {}: {}\n", k, format_value(v)));
                 }
             }
         }
     }
 
     ctx.push_str(&format!(
-        "\nPLAYER REFERENCE\nTo connect items to this player use: --[owned_by]--> @{}\n",
-        player_id
+        "\nPLAYER REFERENCE\nAdd items to inventory: @inventory/{}/inventory:items --[contains]--> @inventory/{}/item:id\n",
+        player_name, player_name
     ));
     ctx.push_str(&format!("\nCURRENT ACTION\n{}\n", action));
 
@@ -228,71 +327,59 @@ fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
 
 fn build_namespace_docs(player_name: &str) -> String {
     let mut docs = String::new();
-    docs.push_str("Namespaces you are allowed to write to:\n");
-    docs.push_str("- World entities you directly affect: @type:id\n");
-    docs.push_str(&format!("- Player inventory: @inventory/{}/item:id\n", player_name));
-    docs.push_str(&format!("- Player abilities: @abilities/{}/ability:id\n", player_name));
-    docs.push_str(&format!("- Player quests: @quests/{}/quest:id\n", player_name));
-    docs.push_str("\nNamespaces you are NOT allowed to write to:\n");
-    docs.push_str("- NPC memory: memory/* — NPCs manage their own memory\n");
-    docs.push_str("- Other players: inventory/other_player/* \n");
-    docs.push_str("- System nodes: remove/*, signal/*\n");
+    docs.push_str("Namespaces and containers:\n");
+    docs.push_str(&format!(
+        "- Add item to inventory:\n  @inventory/{}/inventory:items\n    --[contains]--> @inventory/{}/item:unique_id\n  @inventory/{}/item:unique_id\n    name: \"Item Name\"\n    ...\n",
+        player_name, player_name, player_name
+    ));
+    docs.push_str(&format!(
+        "- Equip item (move from inventory to equipped):\n  @equipped/{}/equipped:slots\n    --[main_hand]--> @inventory/{}/item:id\n",
+        player_name, player_name
+    ));
+    docs.push_str(&format!(
+        "- Add ability:\n  @abilities/{}/abilities:known\n    --[contains]--> @abilities/{}/ability:id\n  @abilities/{}/ability:id\n    name: \"Ability Name\"\n    level: 1\n",
+        player_name, player_name, player_name
+    ));
+    docs.push_str(&format!(
+        "- Add quest:\n  @quests/{}/quests:active\n    --[contains]--> @quests/{}/quest:id\n  @quests/{}/quest:id\n    description: \"Quest description\"\n    status: active\n",
+        player_name, player_name, player_name
+    ));
+    docs.push_str("\nNEVER write to stats/* — stats are system managed\n");
+    docs.push_str("NEVER write to other players namespaces\n");
+    docs.push_str("NEVER use owned_by or assigned_to edges — use container edges instead\n");
     docs
 }
 
 async fn call_ollama(context: &str, player_name: &str) -> Result<String, String> {
     let client = Client::new();
+    let namespace_docs = build_namespace_docs(player_name);
 
     let prompt = format!(
         r#"You are an AI game master for a graph-based RPG.
-    Respond with ONLY valid Edgescript. No explanation, no markdown, no code blocks.
-    
-    Edgescript rules:
-    - Every edge MUST be directly under its node declaration, indented 2 spaces
-    - NEVER write edges without a node declaration above them
-    - NEVER modify existing inventory items — create new ones for new loot
-    - NEVER put edges inside property values
-    - Every new inventory item MUST have --[owned_by]--> @player:{}
-    - Every new quest MUST have --[assigned_to]--> @player:{}
-    
-    Example of correct Edgescript:
-    @inventory/{}/item:stolen_pouch
-      name: "Merchant's Pouch"
-      value: 12
-      rarity: common
-      --[owned_by]--> @player:{}
-    
-    @quests/{}/quest:find_the_fence
-      description: "Find someone to buy your stolen goods"
-      status: active
-      --[assigned_to]--> @player:{}
-    
-    @player:{}
-      narrative: "updated narrative here"
-      dominant_trait: cunning
-      notable_actions: "pickpocketed merchant"
-    
-    @npc:merchant
-      disposition: uneasy
-    
-    Output ONLY Edgescript like the example. Nothing else.
-    
-    {}
-    
-    Context:
-    {}
-    
-    Edgescript patch:"#,
-            player_name,  // owned_by rule
-            player_name,  // assigned_to rule
-            player_name,  // example inventory
-            player_name,  // example quest
-            player_name,  // example owned_by edge
-            player_name,  // example assigned_to edge
-            player_name,  // example player update
-            build_namespace_docs(player_name),
-            context
-        );
+Respond with ONLY valid Edgescript. No explanation, no markdown, no code blocks.
+
+Edgescript rules:
+- Every edge MUST be directly under its node declaration, indented 2 spaces
+- NEVER write edges without a node declaration above them
+- NEVER put edges inside property values
+- Use container edges — NEVER use owned_by or assigned_to
+
+{}
+
+Always update the player node:
+  narrative: updated description of who this player is
+  dominant_trait: single word
+  notable_actions: comma separated list
+
+Output ONLY Edgescript. Nothing else.
+
+Context:
+{}
+
+Edgescript patch:"#,
+        namespace_docs,
+        context
+    );
 
     let req = OllamaRequest {
         model: PLAYER_MODEL.to_string(),
@@ -319,7 +406,6 @@ pub fn merge_patch(world: &mut ESGraph, patch: ESGraph, allowed_namespaces: &[&s
     for (key, patch_node) in patch.nodes {
         if key.starts_with("remove:") { continue; }
 
-        // check namespace is allowed
         let namespace = &patch_node.namespace;
         let is_allowed = allowed_namespaces.iter().any(|ns| {
             namespace == *ns || namespace.starts_with(ns)
@@ -330,7 +416,6 @@ pub fn merge_patch(world: &mut ESGraph, patch: ESGraph, allowed_namespaces: &[&s
             continue;
         }
 
-        // rest of merge unchanged
         if let Some(existing) = world.nodes.get_mut(&key) {
             for (k, v) in patch_node.props {
                 existing.props.insert(k, v);
@@ -338,6 +423,7 @@ pub fn merge_patch(world: &mut ESGraph, patch: ESGraph, allowed_namespaces: &[&s
             for edge in patch_node.edges {
                 let already_exists = existing.edges.iter().any(|e| {
                     e.label == edge.label
+                    && e.target_namespace == edge.target_namespace
                     && e.target_type == edge.target_type
                     && e.target_id == edge.target_id
                 });
