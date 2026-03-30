@@ -2,3 +2,4 @@
 Cargo.lock
 .env
 /data
+/node_modules

@@ -9,7 +9,8 @@ use tokio::sync::{broadcast, RwLock};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use futures::StreamExt;
-use crate::state::AppState;
+use tower_http::services::ServeDir;
+use crate::{graph::ESGraph, state::AppState};
 
 // messages the server broadcasts to all connected clients
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -27,6 +28,7 @@ pub enum ServerMessage {
         strength: f64,
         context: String,
         absorbed: bool,
+        ambient: bool,
     },
     #[serde(rename = "node_update")]
     NodeUpdate {
@@ -55,17 +57,12 @@ pub struct EdgeData {
 pub async fn start(state: Arc<AppState>) {
     let app = Router::new()
         .route("/ws", get(ws_handler))
-        .route("/", get(serve_index))
+        .fallback_service(ServeDir::new("visualizer"))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("Visualizer running at http://localhost:3000");
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn serve_index() -> impl axum::response::IntoResponse {
-    let html = include_str!("../visualizer/index.html");
-    axum::response::Html(html)
 }
 
 async fn ws_handler(
@@ -114,15 +111,18 @@ pub async fn build_snapshot(state: &Arc<AppState>) -> ServerMessage {
     let mut edges = Vec::new();
 
     for (key, node) in &graph.nodes {
+        if !ESGraph::is_world_key(key) { continue; }
         nodes.push(NodeData {
             id: key.clone(),
             node_type: node.node_type.clone(),
             props: serde_json::to_value(&node.props).unwrap_or_default(),
         });
         for edge in &node.edges {
+            let target_key = format!("{}:{}", edge.target_type, edge.target_id);
+            if !ESGraph::is_world_key(&target_key) { continue; }
             edges.push(EdgeData {
                 source: key.clone(),
-                target: format!("{}:{}", edge.target_type, edge.target_id),
+                target: target_key,
                 label: edge.label.clone(),
                 affinity: edge.affinity,
             });

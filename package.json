@@ -1,0 +1,27 @@
+{
+  "name": "world-engine",
+  "version": "1.0.0",
+  "description": "An AI-driven graph-based RPG backend built in Rust. The world is a living graph of nodes and edges — players, NPCs, factions, items, scenes — connected by relationships and brought to life by a hierarchy of AI agents. Every player action sends an event signal rippling through the graph, and independent NPC agents react based on their own context and personality.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewBazen/world-engine.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AndrewBazen/world-engine/issues"
+  },
+  "homepage": "https://github.com/AndrewBazen/world-engine#readme",
+  "devDependencies": {
+    "@eslint/css": "^1.0.0",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.1.0",
+    "globals": "^17.4.0"
+  }
+}

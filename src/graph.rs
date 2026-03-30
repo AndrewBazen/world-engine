@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize, Serializer};
-use crate::signal::EventSignal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ESNode {
@@ -113,29 +112,7 @@ impl ESNode {
         self.edges.iter().filter(|e| e.label == label).map(|e| e.clone()).collect()
     }
 
-    // Signal methods
-
-    pub fn should_absorb(&self, signal: &EventSignal, strength: f64) -> bool {
-        let threshold = self.get_number("threshold").unwrap_or(0.5);
-        strength >= threshold
-    }
-    
-    pub fn absorb(&mut self, signal: &EventSignal, strength: f64) {
-        self.props.insert(
-            "last_signal_context".to_string(),
-            ESValue::Text(signal.context.clone())
-        );
-        self.props.insert(
-            "last_signal_strength".to_string(),
-            ESValue::Number(strength)
-        );
-        let current = self.get_number("activation").unwrap_or(0.0);
-        self.props.insert(
-            "activation".to_string(),
-            ESValue::Number((current + strength).min(1.0))
-        );
-
-    }
+    // ── Property accessors ─────────────────────────────────────
 
     pub fn get_number(&self, key: &str) -> Option<f64> {
         match self.props.get(key) {
