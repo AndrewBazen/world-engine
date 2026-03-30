@@ -174,7 +174,7 @@ pub async fn agent_tick(
         action.strength,
         &action.context,
     );
-    let absorbed = crate::signal::propagate(state.clone(), signal).await;
+    let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
     println!("signal propagated, {} NPCs absorbed", absorbed.len());
 
     // fire NPC agent ticks for each absorbed NPC — collect any emitted signals
@@ -198,8 +198,14 @@ pub async fn agent_tick(
 
     // propagate any NPC-emitted signals (cascading reactions)
     for npc_signal in npc_signals {
-        let cascade_absorbed = crate::signal::propagate(state.clone(), npc_signal).await;
-        println!("cascade signal propagated, {} NPCs absorbed", cascade_absorbed.len());
+        let cascade = crate::signal::EventSignal::with_visited(
+            &npc_signal.origin_id, 
+            npc_signal.strength, 
+            &npc_signal.context, 
+            visited.clone(),
+        );
+        let (_cascade_absorbed, _) = crate::signal::propagate(state.clone(), cascade).await;
+        println!("cascade signal propagated, {} NPCs absorbed", _cascade_absorbed.len());
         // NOTE: we don't recurse NPC agent ticks on cascades to prevent infinite loops.
         // A future version could allow bounded depth.
     }
@@ -385,15 +391,47 @@ async fn call_ollama(context: &str, player_name: &str) -> Result<String, String>
         r#"You are an AI game master for a graph-based RPG.
 Respond with ONLY valid Edgescript. No explanation, no markdown, no code blocks.
 
-Edgescript rules:
+EDGESCRIPT SYNTAX
+  @type:id                  — world node declaration
+  @namespace/type:id        — namespaced node declaration
+  key: value                — property (indented under its node)
+  --[label]--> @type:id     — edge (indented under its node)
+
+Every node MUST have a colon between type and id. The colon is required.
+  CORRECT: @player:andrew
+  CORRECT: @npc:guard
+  CORRECT: @inventory/{player_name}/item:sword
+  WRONG:   @player/andrew
+  WRONG:   @inventory/{player_name}/item/sword
+
+EXAMPLE PATCH
+  @player:{player_name}
+    narrative: "Stole a loaf of bread from the baker's stall."
+    dominant_trait: reckless
+    notable_actions: stole bread
+
+  @inventory/{player_name}/inventory:items
+    --[contains]--> @inventory/{player_name}/item:bread
+
+  @inventory/{player_name}/item:bread
+    name: "Stolen Bread"
+    weight: 1
+
+  @npc:baker
+    disposition: hostile
+    narrative: "Noticed the theft and is furious."
+
+RULES
 - Every edge MUST be directly under its node declaration, indented 2 spaces
 - NEVER write edges without a node declaration above them
 - NEVER put edges inside property values
 - Use container edges — NEVER use owned_by or assigned_to
+- NEVER write to stats/* — stats are system managed
+- NEVER write to other players' namespaces
 
-{}
+{namespace_docs}
 
-Always update the player node:
+Always update the player node @player:{player_name} with:
   narrative: updated description of who this player is
   dominant_trait: single word
   notable_actions: comma separated list
@@ -401,11 +439,9 @@ Always update the player node:
 Output ONLY Edgescript. Nothing else.
 
 Context:
-{}
+{context}
 
 Edgescript patch:"#,
-        namespace_docs,
-        context
     );
 
     let req = OllamaRequest {
@@ -622,12 +658,33 @@ async fn call_ollama_npc(context: &str, npc_name: &str) -> Result<String, String
     let client = Client::new();
 
     let prompt = format!(
-        r#"You are {name}, an NPC in a graph-based RPG world. You just perceived something
-happening nearby. Decide how you react based on your personality, role, and relationships.
+        r#"You are {name}, an NPC in a graph-based RPG world. You just perceived something happening nearby. Decide how you react based on your personality, role, and relationships.
 
 Respond with ONLY valid Edgescript. No explanation, no markdown, no code blocks.
 
-Edgescript rules:
+EDGESCRIPT SYNTAX
+  @type:id                  — world node declaration
+  @namespace/type:id        — namespaced node declaration
+  key: value                — property (indented under its node)
+  --[label]--> @type:id     — edge (indented under its node)
+
+Every node MUST have a colon between type and id. The colon is required.
+  CORRECT: @npc:{name}
+  CORRECT: @npc:guard
+  WRONG:   @npc/{name}
+
+EXAMPLE PATCH
+  @npc:{name}
+    alert_level: high
+    current_action: shouting for the guard
+    narrative: "Saw the theft and is calling for help."
+    signal_emit: "shouts: Stop, thief!"
+    signal_strength: 0.8
+
+  @npc:guard
+    disposition: hostile
+
+RULES
 - Every edge MUST be directly under its node declaration, indented 2 spaces
 - NEVER write edges without a node declaration above them
 - You can ONLY write to world namespace nodes (no inventory/, equipped/, etc.)
@@ -642,8 +699,7 @@ If you want to do something noticeable (shout, attack, run, investigate), also s
   signal_emit: brief description of what others would perceive
   signal_strength: 0.0 to 1.0 (how noticeable your action is)
 
-You may also update other world nodes if your action affects them (e.g. move to a new
-location, interact with objects). You may add new edges to represent new relationships.
+You may also update other world nodes if your action affects them (e.g. move to a new location, interact with objects). You may add new edges to represent new relationships.
 
 Output ONLY Edgescript. Nothing else.
 

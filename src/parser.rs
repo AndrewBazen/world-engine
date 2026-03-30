@@ -30,7 +30,7 @@ pub fn parse(input: &str) -> ESGraph {
             LineType::Empty      => { continue; }
             LineType::Comment    => { continue; }
             LineType::NodeDecl => {
-                if let Some(node) = current {
+                if let Some(node) = current.take() {
                     graph.insert(node);
                 }
             
@@ -46,6 +46,10 @@ pub fn parse(input: &str) -> ESGraph {
                 };
             
                 let parts: Vec<&str> = type_and_id.splitn(2, ':').collect();
+                if parts.len() < 2 {
+                    eprintln!("skipping malformed node declaration: {}", line);
+                    continue;
+                }
                 let n_type = parts[0];
                 let n_id = parts[1];
             
@@ -55,6 +59,10 @@ pub fn parse(input: &str) -> ESGraph {
                 if let Some(node) = current.as_mut() {
                     
                     let parts: Vec<&str> = line.splitn(2, ": ").collect();
+                    if parts.len() < 2 {
+                        eprintln!("skipping malformed property declaration: {}", line);
+                        continue;
+                    }
                     let key = parts[0].trim();
                     let raw = parts[1].trim();
 
@@ -81,6 +89,10 @@ pub fn parse(input: &str) -> ESGraph {
                     let mut target = parts[1].trim();
                     target = target.trim_start_matches("@");
                     let target_parts: Vec<&str> = target.splitn(2, ":").collect();
+                    if target_parts.len() < 2 {
+                        eprintln!("skipping malformed edge target: {}", target);
+                        continue;
+                    }
                     let target_type = target_parts[0];
                     let target_id = target_parts[1];
 
@@ -92,7 +104,7 @@ pub fn parse(input: &str) -> ESGraph {
                 let inline_parts: Vec<&str> = line.splitn(2, " --[").collect();
 
                 // parse the node declaration
-                if let Some(node) = current {
+                if let Some(node) = current.take() {
                     graph.insert(node);
                 }
                 let line = inline_parts[0].trim_start_matches("@");
@@ -106,6 +118,10 @@ pub fn parse(input: &str) -> ESGraph {
                     ("world", line)
                 };
                 let n_parts: Vec<&str> = type_and_id.splitn(2, ":").collect();
+                if n_parts.len() < 2 {
+                    eprintln!("skipping malformed inline node declaration: {}", line);
+                    continue;
+                }
                 let n_type = n_parts[0];
                 let n_id = n_parts[1];
 
@@ -119,6 +135,10 @@ pub fn parse(input: &str) -> ESGraph {
                     let mut target = parts[1].trim();
                     target = target.trim_start_matches("@");
                     let target_parts: Vec<&str> = target.splitn(2, ":").collect();
+                    if target_parts.len() < 2 {
+                        eprintln!("skipping malformed edge target: {}", target);
+                        continue;
+                    }
                     let target_type = target_parts[0];
                     let target_id = target_parts[1];
 
@@ -133,7 +153,7 @@ pub fn parse(input: &str) -> ESGraph {
         }
     }
 
-    if let Some(node) = current {
+    if let Some(node) = current.take() {
         graph.insert(node);
     }
 

@@ -470,5 +470,5 @@ pub fn current_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
 pub fn current_perception(node: &ESNode, graph: &ESGraph) -> f64 {
     let awareness = current_awareness(node, graph);
     let ceiling = get_intelligence_ceiling(node, graph);
-    (awareness * ceiling).clamp(0.0, ceiling)
+    awareness.max(ceiling)
 }

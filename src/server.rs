@@ -119,7 +119,7 @@ pub async fn build_snapshot(state: &Arc<AppState>) -> ServerMessage {
         });
         for edge in &node.edges {
             let target_key = format!("{}:{}", edge.target_type, edge.target_id);
-            if !ESGraph::is_world_key(&target_key) { continue; }
+            if !graph.nodes.contains_key(&target_key) || !ESGraph::is_world_key(&target_key) { continue; }
             edges.push(EdgeData {
                 source: key.clone(),
                 target: target_key,
@@ -154,11 +154,12 @@ async fn handle_client_message(text: &str, state: &Arc<AppState>) {
 
     if let Ok(msg) = serde_json::from_str::<ClientMessage>(text) {
         match msg {
+
             ClientMessage::TriggerSignal { origin_id, strength, context } => {
                 let signal = crate::signal::EventSignal::new(
                     &origin_id, strength, &context
                 );
-                crate::signal::propagate(state.clone(), signal).await;
+                let (_absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
             }
             ClientMessage::PlayerAction { player_id, context, strength } => {
                 let action = crate::agent::PlayerAction {

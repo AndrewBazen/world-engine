@@ -30,6 +30,19 @@ impl EventSignal {
     }
 }
 
+impl EventSignal {
+    pub fn with_visited(origin_id: &str, strength: f64, context: &str, visited: HashSet<String>) -> Self {
+        let mut visited = visited;
+        visited.insert(origin_id.to_string());
+        EventSignal {
+            origin_id: origin_id.to_string(),
+            strength,
+            context: context.to_string(),
+            visited,
+        }
+    }
+}
+
 /// An NPC that absorbed a signal and needs an agent decision call.
 #[derive(Debug, Clone)]
 pub struct AbsorbedSignal {
@@ -43,6 +56,9 @@ pub struct AbsorbedSignal {
 /// Stat-derived perception check. Higher perception → detect weaker signals.
 /// Returns true if the NPC perceives the signal.
 fn perceives(node: &ESNode, graph: &ESGraph, arrival_strength: f64) -> bool {
+    // only npcs percieve the signals
+    if node.node_type != "npc" { return false; }
+
     let perception = stats::current_perception(node, graph);
     // perception 0.8 → threshold 0.2 (catches weak signals)
     // perception 0.3 → threshold 0.7 (only catches strong signals)
@@ -115,10 +131,12 @@ fn node_location(node: &ESNode) -> Option<String> {
 /// Phase 2 (ambient): at each location touched, check nearby NPCs.
 ///
 /// Returns a list of NPCs that absorbed the signal and need agent calls.
-pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec<AbsorbedSignal> {
+pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Vec<AbsorbedSignal>, HashSet<String>) {
+    let mut all_visited: HashSet<String> = HashSet::new();
+    all_visited.insert(initial_signal.origin_id.clone());
     // only propagate from world nodes
     if !ESGraph::is_world_key(&initial_signal.origin_id) {
-        return Vec::new();
+        return (Vec::new(), HashSet::new());
     }
 
     let mut absorbed_npcs: Vec<AbsorbedSignal> = Vec::new();
@@ -153,29 +171,31 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
             let arriving = signal.strength * edge.affinity;
             if arriving < DISSIPATION_THRESHOLD { continue; }
 
-            let (perceived, neighbor_location, baseline, awareness) = {
+            let (is_npc, perceived, neighbor_location, baseline, awareness) = {
                 let graph = state.graph.read().await;
                 match graph.nodes.get(&neighbor_id) {
                     Some(n) => (
+                        n.node_type == "npc",
                         perceives(n, &graph, arriving),
                         node_location(n),
                         stats::get_baseline_awareness(n, &graph),
                         stats::current_awareness(n, &graph),
                     ),
-                    None => (false, None, 0.0, 0.0),
+                    None => (false, false, None, 0.0, 0.0),
                 }
             };
 
-            let _ = state.tx.send(ServerMessage::SignalHop {
-                from: signal.origin_id.clone(),
-                to: neighbor_id.clone(),
-                strength: arriving,
-                context: signal.context.clone(),
-                absorbed: perceived,
-                ambient: false,
-            });
 
-            if perceived {
+            if is_npc && perceived {
+                let _ = state.tx.send(ServerMessage::SignalHop {
+                    from: signal.origin_id.clone(),
+                    to: neighbor_id.clone(),
+                    strength: arriving,
+                    context: signal.context.clone(),
+                    absorbed: perceived,
+                    ambient: false,
+                });
+
                 // absorb and update awareness
                 {
                     let mut graph = state.graph.write().await;
@@ -196,13 +216,11 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
                 }
 
                 // queue for NPC agent call if this is an NPC
-                if neighbor_id.starts_with("npc:") {
-                    absorbed_npcs.push(AbsorbedSignal {
-                        npc_id: neighbor_id.clone(),
-                        context: signal.context.clone(),
-                        strength: arriving,
-                    });
-                }
+                absorbed_npcs.push(AbsorbedSignal {
+                    npc_id: neighbor_id.clone(),
+                    context: signal.context.clone(),
+                    strength: arriving,
+                });
 
                 // queue continuation along this node's edges
                 let mut next = EventSignal {
@@ -211,12 +229,25 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
                     context: signal.context.clone(),
                     visited: signal.visited.clone(),
                 };
+                all_visited.insert(neighbor_id.clone());
+                next.visited.insert(neighbor_id);
+                next_signals.push(next);
+            } else if !is_npc {
+                // queue continuation along this node's edges
+                let mut next = EventSignal {
+                    origin_id: neighbor_id.clone(),
+                    strength: arriving * DECAY_FACTOR,
+                    context: signal.context.clone(),
+                    visited: signal.visited.clone(),
+                };
+                all_visited.insert(neighbor_id.clone());
                 next.visited.insert(neighbor_id);
                 next_signals.push(next);
             }
         }
 
         // ── Phase 2: ambient broadcast at touched locations ──────
+
         for location in &locations_touched {
             let ambient_strength = signal.strength * AMBIENT_DECAY;
             if ambient_strength < DISSIPATION_THRESHOLD { continue; }
@@ -227,19 +258,20 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
             };
 
             for npc_id in &nearby_npcs {
-                let (perceived, baseline, awareness) = {
+                let (is_npc, perceived, baseline, awareness) = {
                     let graph = state.graph.read().await;
                     match graph.nodes.get(npc_id) {
                         Some(n) => (
+                            n.node_type == "npc",
                             perceives(n, &graph, ambient_strength),
                             stats::get_baseline_awareness(n, &graph),
                             stats::current_awareness(n, &graph),
                         ),
-                        None => (false, 0.0, 0.0),
+                        None => (false, false, 0.0, 0.0),
                     }
                 };
 
-                if perceived {
+                if is_npc && perceived {
                     let _ = state.tx.send(ServerMessage::SignalHop {
                         from: signal.origin_id.clone(),
                         to: npc_id.clone(),
@@ -248,6 +280,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
                         absorbed: true,
                         ambient: true,
                     });
+
 
                     {
                         let mut graph = state.graph.write().await;
@@ -275,6 +308,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
                         context: signal.context.clone(),
                         visited: signal.visited.clone(),
                     };
+                    all_visited.insert(npc_id.clone());
                     next.visited.insert(npc_id.clone());
                     next_signals.push(next);
                 }
@@ -304,7 +338,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> Vec
         }
     });
 
-    absorbed_npcs
+    (absorbed_npcs, all_visited)
 }
 
 #[cfg(test)]
@@ -343,7 +377,7 @@ mod tests {
             "slipped past the garrison unseen",
         );
 
-        let absorbed = propagate(state.clone(), signal).await;
+        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // guard should have absorbed (strong signal, default perception)
         assert!(absorbed.iter().any(|a| a.npc_id == "npc:guard"));
@@ -398,7 +432,7 @@ mod tests {
             "stole bread from merchant stall",
         );
 
-        let absorbed = propagate(state.clone(), signal).await;
+        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // merchant absorbed via structural edge
         assert!(absorbed.iter().any(|a| a.npc_id == "npc:merchant"));
@@ -436,7 +470,7 @@ mod tests {
             "quietly pocketed a coin",
         );
 
-        let absorbed = propagate(state.clone(), signal).await;
+        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // dim guard should NOT perceive a weak signal
         assert!(!absorbed.iter().any(|a| a.npc_id == "npc:dim_guard"));
@@ -471,7 +505,7 @@ mod tests {
             "drew a weapon",
         );
 
-        let absorbed = propagate(state.clone(), signal).await;
+        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // guard should absorb, but no inventory items should appear
         assert!(absorbed.iter().any(|a| a.npc_id == "npc:guard"));

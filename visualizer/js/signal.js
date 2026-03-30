@@ -12,6 +12,11 @@ export function animateHop(fromId, toId, absorbed, ambient) {
 	const color = absorbed ? '#39ff8a' : '#ff4444';
 
 	if (ambient) {
+		const dx = toNode.x - fromNode.x;
+		const dy = toNode.y - fromNode.y;
+		const dist = Math.sqrt(dx * dx + dy * dy);
+		const rippleRadius = Math.max(dist + NODE_RADIUS, 80);
+		const delay = (dist / rippleRadius) * SIGNAL_DURATION * 2;
 		// ripple ring expanding from origin
 		const ring = effectsG.append('circle')
 			.attr('class', 'ripple-ring')
@@ -26,7 +31,7 @@ export function animateHop(fromId, toId, absorbed, ambient) {
 		ring.transition()
 			.duration(SIGNAL_DURATION * 2)
 			.ease(d3.easeQuadOut)
-			.attr('r', 80)
+			.attr('r', rippleRadius)
 			.attr('opacity', 0)
 			.on('end', () => ring.remove());
 
@@ -34,7 +39,7 @@ export function animateHop(fromId, toId, absorbed, ambient) {
 				nodesG.selectAll('.node-group')
 					.filter(d => d.id === toId)
 					.select('circle')
-					.transition().delay(SIGNAL_DURATION)
+					.transition().delay(delay)
 					.duration(200)
 					.attr('fill-opacity', 1)
 					.attr('stroke-opacity', 1)
