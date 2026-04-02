@@ -47,6 +47,7 @@ impl EventSignal {
 #[derive(Debug, Clone)]
 pub struct AbsorbedSignal {
     pub npc_id: String,
+    pub origin_id: String,
     pub context: String,
     pub strength: f64,
 }
@@ -218,6 +219,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                 // queue for NPC agent call if this is an NPC
                 absorbed_npcs.push(AbsorbedSignal {
                     npc_id: neighbor_id.clone(),
+                    origin_id: signal.origin_id.clone(),
                     context: signal.context.clone(),
                     strength: arriving,
                 });
@@ -297,6 +299,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
 
                     absorbed_npcs.push(AbsorbedSignal {
                         npc_id: npc_id.clone(),
+                        origin_id: signal.origin_id.clone(),
                         context: signal.context.clone(),
                         strength: ambient_strength,
                     });

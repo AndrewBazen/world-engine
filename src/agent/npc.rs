@@ -1,4 +1,4 @@
-use super::{format_value, merge_patch};
+use super::{format_value, merge_patch, VERBOSE};
 use crate::graph::{ESGraph, parse};
 use std::sync::Arc;
 
@@ -16,8 +16,10 @@ pub async fn npc_agent_tick(
         let graph = state.graph.read().await;
         build_npc_context(&graph, npc_id, &signal.context, signal.strength)
     };
-    println!("npc context built:\n{}", context);
-
+    if VERBOSE {
+        println!("npc context built:\n{}", context);
+    }
+    
     let npc_name = npc_id
         .split(':')
         .nth(1)
@@ -29,8 +31,10 @@ pub async fn npc_agent_tick(
 
     println!("calling ollama for npc {}...", npc_name);
     let patch_text = call_npc_agent(&context, &npc_name).await?;
-    println!("ollama npc responded:\n{}", patch_text);
-
+    if VERBOSE {
+        println!("ollama npc responded:\n{}", patch_text);
+    }
+    
     let patch = parse(&patch_text);
     println!("npc patch parsed, {} nodes", patch.nodes.len());
 
@@ -79,7 +83,7 @@ pub async fn npc_agent_tick(
         let significance = crate::memory::calculate_significance(signal.strength, is_direct);
 
         let event = crate::memory::MemoryEvent::new(
-            signal.npc_id.clone(),
+            signal.origin_id.clone(),
             signal.context.clone(),
             String::new(),
             String::new(),
@@ -153,6 +157,12 @@ fn build_npc_context(graph: &ESGraph, npc_id: &str, signal_context: &str, signal
     ctx.push_str(&format!("  signal: {}\n", signal_context));
     ctx.push_str(&format!("  strength: {:.2}\n", signal_strength));
 
+    // current awareness state
+    let awareness = crate::stats::current_awareness(npc, graph);
+    let perception = crate::stats::current_perception(npc, graph);
+    ctx.push_str(&format!("  your_awareness: {:.2}\n", awareness));
+    ctx.push_str(&format!("  your_perception: {:.2}\n", perception));
+
     // relevant memories
     let memories = crate::memory::get_relevant_memories(graph, npc_id, &signal_context, 5);
     if !memories.is_empty() {
@@ -170,12 +180,6 @@ fn build_npc_context(graph: &ESGraph, npc_id: &str, signal_context: &str, signal
             ctx.push_str(&format!("  - [sig {:.1}] {} (about {})\n", significance, action, subject));
         }
     }
-
-    // current awareness state
-    let awareness = crate::stats::current_awareness(npc, graph);
-    let perception = crate::stats::current_perception(npc, graph);
-    ctx.push_str(&format!("  your_awareness: {:.2}\n", awareness));
-    ctx.push_str(&format!("  your_perception: {:.2}\n", perception));
 
     // nearby world state
     let npc_location = match npc.props.get("location") {

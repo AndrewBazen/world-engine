@@ -2,11 +2,11 @@ mod player;
 mod npc;
 mod handlers;
 
-pub use player::agent_tick;
-
 use std::sync::Arc;
 use crate::graph::{ESGraph};
 use crate::state::AppState;
+
+pub const VERBOSE: bool = false;
 
 pub struct PlayerAction {
     pub player_id: String,

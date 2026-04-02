@@ -1,4 +1,4 @@
-use super::{PlayerAction, format_value, merge_patch};
+use super::{PlayerAction, format_value, merge_patch, VERBOSE};
 use crate::agent::npc::npc_agent_tick;
 use crate::graph::{ESGraph, ESEdge, parse};
 use std::collections::HashSet;
@@ -14,7 +14,9 @@ pub async fn agent_tick(
     let context = {
         let graph = state.graph.read().await;
         let ctx = build_context(&graph, &action.player_id, &action.context);
-        println!("context built:\n{}", ctx);
+        if VERBOSE {
+            println!("context built:\n{}", ctx);
+        }
         ctx
     };
 
@@ -39,7 +41,9 @@ pub async fn agent_tick(
 
     println!("calling ollama...");
     let patch_text = call_player_agent(&context, &player_name).await?;
-    println!("ollama responded:\n{}", patch_text);
+    if VERBOSE {
+        println!("ollama responded:\n{}", patch_text);
+    }
 
     let patch = parse(&patch_text);
     println!("patch parsed, {} nodes", patch.nodes.len());
