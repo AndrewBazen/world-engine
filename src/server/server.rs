@@ -5,7 +5,6 @@ use axum::{
     routing::get,
     Router,
 };
-use tokio::sync::{broadcast, RwLock};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use futures::StreamExt;
@@ -167,7 +166,7 @@ async fn handle_client_message(text: &str, state: &Arc<AppState>) {
                     context,
                     strength,
                 };
-                if let Err(e) = crate::agent::agent_tick(state.clone(), action).await {
+                if let Err(e) = crate::agent::handle_player_input(state.clone(), action).await {
                     eprintln!("agent tick error: {}", e);
                 }
             }

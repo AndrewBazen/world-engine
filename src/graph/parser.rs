@@ -163,7 +163,7 @@ pub fn parse(input: &str) -> ESGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serializer::serialize;
+    use crate::graph::serialize;
 
     #[test]
     fn test_parse_node_declaration() {

@@ -1,19 +1,15 @@
 mod graph;
-mod query;
-mod parser;
-mod serializer;
+mod memory;
 mod signal;
 mod server;
 mod state;
 mod stats;
 mod agent;
+mod llm;
 mod db;
 
-use graph::{ESGraph, ESNode};
-use parser::parse;
+use crate::graph::{parse, ESGraph, ESNode};
 use state::AppState;
-
-const WORLD_FILE: &str = "data/world.es";
 
 fn load_world_dir(path: &str) -> ESGraph {
     let mut combined = ESGraph::new();
