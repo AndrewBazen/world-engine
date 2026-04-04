@@ -1,6 +1,6 @@
 mod classifier;
 
-pub use classifier::{classify_input, resolve_location, InputCategory};
+pub use classifier::{classify_input, resolve_location, InputCategory, should_npc_act};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

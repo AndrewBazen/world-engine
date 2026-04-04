@@ -163,19 +163,81 @@ pub async fn agent_tick(
     // fire NPC agent ticks for each absorbed NPC — collect any emitted signals
     let mut npc_signals: Vec<crate::signal::EventSignal> = Vec::new();
     for npc_signal in &absorbed {
-        println!("  npc agent tick for {} (strength {:.2})",
-            npc_signal.npc_id, npc_signal.strength);
-        match npc_agent_tick(state.clone(), npc_signal).await {
-            Ok(Some(emitted)) => {
-                println!("  {} emitted signal: {}", npc_signal.npc_id, emitted.context);
-                npc_signals.push(emitted);
+        // extract NPC props for the classifier
+        let (occupation, personality, relationships) = {
+            let graph = state.graph.read().await;
+            match graph.nodes.get(&npc_signal.npc_id) {
+                Some(n) => {
+                    let occ = match n.props.get("occupation") {
+                        Some(crate::graph::ESValue::Text(s)) => s.clone(),
+                        _ => "unknown".to_string(),
+                    };
+                    let pers = match n.props.get("personality") {
+                        Some(crate::graph::ESValue::Text(s)) => s.clone(),
+                        _ => "unknown".to_string(),
+                    };
+                    let rels = n.edges.iter()
+                        .map(|e| format!("{} {}:{}", e.label, e.target_type, e.target_id))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    (occ, pers, rels)
+                }
+                None => continue,
             }
-            Ok(None) => {
-                println!("  {} reacted quietly", npc_signal.npc_id);
+        };
+    
+        let npc_name = npc_signal.npc_id.split(':').nth(1).unwrap_or(&npc_signal.npc_id);
+    
+        let should_act = crate::llm::should_npc_act(
+            npc_name,
+            &occupation,
+            &personality,
+            &relationships,
+            &npc_signal.context,
+            npc_signal.strength,
+        ).await.unwrap_or(false);
+    
+        if should_act {
+            println!("  {} decides to act", npc_signal.npc_id);
+            match npc_agent_tick(state.clone(), npc_signal).await {
+                Ok(Some(emitted)) => {
+                    println!("  {} emitted signal: {}", npc_signal.npc_id, emitted.context);
+                    npc_signals.push(emitted);
+                }
+                Ok(None) => {
+                    println!("  {} reacted quietly", npc_signal.npc_id);
+                }
+                Err(e) => {
+                    eprintln!("  npc agent error for {}: {}", npc_signal.npc_id, e);
+                }
             }
-            Err(e) => {
-                eprintln!("  npc agent error for {}: {}", npc_signal.npc_id, e);
-            }
+        } else {
+            println!("  {} ignores the event", npc_signal.npc_id);
+            // still write a memory
+            let location = {
+                let graph = state.graph.read().await;
+                graph.nodes.get(&npc_signal.npc_id)
+                    .and_then(|n| match n.props.get("location") {
+                        Some(crate::graph::ESValue::Text(l)) => Some(l.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            };
+            let significance = crate::memory::calculate_significance(
+                npc_signal.strength,
+                npc_signal.context.contains(npc_name),
+            );
+            let event = crate::memory::MemoryEvent::new(
+                npc_signal.origin_id.clone(),
+                npc_signal.context.clone(),
+                String::new(),
+                "ignored".to_string(),
+                location,
+                significance,
+            );
+            let mut graph = state.graph.write().await;
+            crate::memory::write_memory(&mut graph, &npc_signal.npc_id, &event);
+            println!("  wrote passive memory for {}", npc_signal.npc_id);
         }
     }
 

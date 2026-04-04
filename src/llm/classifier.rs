@@ -56,3 +56,42 @@ Respond with ONLY the location ID that best matches. Nothing else."#,
     let response = call_ollama(super::CLASSIFIER_MODEL, &prompt).await?;
     Ok(response.trim().to_string())
 }
+
+pub async fn should_npc_act(
+    npc_name: &str,
+    occupation: &str,
+    personality: &str,
+    relationships: &str,
+    signal_context: &str,
+    signal_strength: f64,
+) -> Result<bool, String> {
+    let is_direct = signal_context.to_lowercase().contains(&npc_name.to_lowercase());
+
+    let involvement = if is_direct {
+        "This directly involves you."
+    } else {
+        "This happened nearby."
+    };
+    let prompt = format!(
+        r#"You are {name}, a {occupation}. Your personality: {personality}.
+Your relationships: {relationships}.
+
+You just noticed (strength {strength:.1}/1.0): "{signal}"
+
+{involvement}
+
+Would you notice and react to this, or would you carry on as if nothing happened?
+Respond with ONLY "act" or "ignore". Nothing else."#,
+        name = npc_name,
+        occupation = occupation,
+        personality = personality,
+        relationships = relationships,
+        strength = signal_strength,
+        signal = signal_context,
+    );
+
+    let response = call_ollama(super::CLASSIFIER_MODEL, &prompt).await?;
+    let answer = response.trim().to_lowercase();
+
+    Ok(answer.contains("act"))
+}

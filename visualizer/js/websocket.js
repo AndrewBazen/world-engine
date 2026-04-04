@@ -2,6 +2,7 @@ import { render, nodes, edges } from "./graph.js";
 import { animateHop, logHop } from "./signal.js";
 import { selectNode, getSelectedNode } from "./panel.js";
 import { WS_URL } from "./config.js";
+import { renderNodeDetail } from "./detail.js";
 
 let ws = null;
 
@@ -74,8 +75,40 @@ export function connect() {
 				}
 			}
 		}
+
+		if (msg.type === 'node_detail') {
+			renderNodeDetail(msg);
+		}
 	};
 }
+
+export function requestNodeDetail(nodeId) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+        type: 'node_detail',
+        node_id: nodeId,
+    }));
+}
+
+function handlePlayerAction() {
+    const input = document.getElementById('action-input');
+    const context = input.value.trim();
+    if (!context || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    ws.send(JSON.stringify({
+        type: 'player_action',
+        player_id: 'player:andrew',
+        context,
+        strength: 0.8,
+    }));
+
+    input.value = '';
+}
+
+document.getElementById('action-btn').addEventListener('click', handlePlayerAction);
+document.getElementById('action-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handlePlayerAction();
+});
 
 function handleFireSignal() {
 	// ── Fire signal ───────────────────────────────────────────────────────────────

@@ -33,7 +33,13 @@ pub enum ServerMessage {
     NodeUpdate {
         id: String,
         props: serde_json::Value,
-    }
+    },
+    #[serde(rename = "node_detail")]
+    NodeDetail {
+        center: String,
+        nodes: Vec<NodeData>,
+        edges: Vec<EdgeData>,
+    },
 }
 
 // serializable node for the browser
@@ -149,6 +155,10 @@ async fn handle_client_message(text: &str, state: &Arc<AppState>) {
             context: String,
             strength: f64,
         },
+        #[serde(rename = "node_detail")]
+        NodeDetail {
+            node_id: String,
+        },
     }
 
     if let Ok(msg) = serde_json::from_str::<ClientMessage>(text) {
@@ -170,6 +180,80 @@ async fn handle_client_message(text: &str, state: &Arc<AppState>) {
                     eprintln!("agent tick error: {}", e);
                 }
             }
+            ClientMessage::NodeDetail { node_id } => {
+                let detail = build_node_detail(state, &node_id).await;
+                let _ = state.tx.send(detail);
+            }
         }
+    }
+}
+
+pub async fn build_node_detail(state: &Arc<AppState>, node_id: &str) -> ServerMessage {
+    let graph = state.graph.read().await;
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+
+    let name = node_id.split(':').nth(1).unwrap_or(node_id);
+    let node_type = node_id.split(':').next().unwrap_or("");
+
+    // always include the center node itself
+    if let Some(node) = graph.nodes.get(node_id) {
+        nodes.push(NodeData {
+            id: node_id.to_string(),
+            node_type: node.node_type.clone(),
+            props: serde_json::to_value(&node.props).unwrap_or_default(),
+        });
+    }
+
+    // determine which namespaces to search
+    let mut prefixes = vec![
+        format!("stats/{}/", name),
+        format!("memory/{}/", name),
+    ];
+
+    if node_type == "player" {
+        prefixes.push(format!("inventory/{}/", name));
+        prefixes.push(format!("equipped/{}/", name));
+        prefixes.push(format!("abilities/{}/", name));
+        prefixes.push(format!("quests/{}/", name));
+    }
+
+    // collect all nodes matching the prefixes
+    for (key, node) in &graph.nodes {
+        if prefixes.iter().any(|p| key.starts_with(p)) {
+            nodes.push(NodeData {
+                id: key.clone(),
+                node_type: node.node_type.clone(),
+                props: serde_json::to_value(&node.props).unwrap_or_default(),
+            });
+            for edge in &node.edges {
+                let target_key = format!("{}:{}", edge.target_type, edge.target_id);
+                edges.push(EdgeData {
+                    source: key.clone(),
+                    target: target_key,
+                    label: edge.label.clone(),
+                    affinity: edge.affinity,
+                });
+            }
+        }
+    }
+
+    // also include edges from the center node
+    if let Some(node) = graph.nodes.get(node_id) {
+        for edge in &node.edges {
+            let target_key = format!("{}:{}", edge.target_type, edge.target_id);
+            edges.push(EdgeData {
+                source: node_id.to_string(),
+                target: target_key,
+                label: edge.label.clone(),
+                affinity: edge.affinity,
+            });
+        }
+    }
+
+    ServerMessage::NodeDetail {
+        center: node_id.to_string(),
+        nodes,
+        edges,
     }
 }

@@ -175,7 +175,6 @@ svg {
   font-family: var(--font-mono);
   font-size: 11px;
   padding: 8px;
-  resize: none;
   outline: none;
   margin-bottom: 10px;
 }
@@ -189,9 +188,55 @@ svg {
 .slider-val { font-size: 11px; color: var(--accent); font-family: var(--font-mono); min-width: 32px; text-align: right; }
 
 input[type=range] {
-  flex: 1; accent-color: var(--accent);
-  height: 2px; cursor: pointer;
+  flex: 1; 
+  height: 2px; 
+  cursor: pointer;
 }
+
+#action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: calc(100% - 280px);
+  height: 40px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border2);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  z-index: 100;
+  transition: width 0.25s;
+}
+
+#action-bar.panel-closed { width: 100%; }
+
+#action-input {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+}
+#action-input:focus { border-color: var(--accent2); }
+
+#action-btn {
+  padding: 6px 16px;
+  background: transparent;
+  border: 1px solid var(--accent2);
+  border-radius: 4px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+#action-btn:hover { background: rgba(0,212,255,0.06); border-color: var(--accent); }
 
 #fire-btn {
   width: 100%;
@@ -213,7 +258,7 @@ input[type=range] {
 
 /* ── Signal log ── */
 #log {
-  position: fixed; bottom: 0; left: 0;
+  position: fixed; bottom: 40px; left: 0;
   width: calc(100% - 280px);
   height: 120px;
   background: var(--bg2);
@@ -255,7 +300,6 @@ input[type=range] {
   font-size: 10px;
   fill: var(--text2);
   pointer-events: none;
-  user-select: none;
 }
 
 .edge-line {
@@ -277,9 +321,9 @@ input[type=range] {
 
 /* node glow on absorption */
 @keyframes absorb-glow {
-  0%   { r: 10; opacity: 1; }
-  50%  { r: 22; opacity: 0.6; }
-  100% { r: 10; opacity: 0; }
+  0%   { r: 10px; opacity: 1; }
+  50%  { r: 22px; opacity: 0.6; }
+  100% { r: 10px; opacity: 0; }
 }
 
 .absorb-ring {
@@ -313,4 +357,54 @@ input[type=range] {
 }
 .legend-dot {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+
+#detail-overlay {
+  position: fixed;
+  top: 56px;
+  right: 290px;
+  width: 600px;
+  height: 600px;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  z-index: 150;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#detail-overlay.open {
+  display: flex;
+}
+
+#detail-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#detail-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+#detail-close {
+  background: none;
+  border: none;
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+#detail-close:hover { color: var(--text); }
+
+#detail-svg {
+  flex: 1;
+  width: 100%;
 }
