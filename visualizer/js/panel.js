@@ -1,18 +1,24 @@
 import { nodeColor } from "./config.js";
 import { edges } from "./graph.js";
 import { requestNodeDetail } from "./websocket.js";
+import { getAwareness, thresholdOf, alertness, baselineOf } from "./awareness.js";
 
 let selectedNode = null;
 
 const NPC_SECTIONS = {
-    'Identity': ['narrative', 'occupation', 'personality', 'disposition', 'background', 'build', 'condition', 'weaknesses', 'notable_skills'],
+    'Identity': ['name', 'narrative', 'occupation', 'personality', 'disposition', 'background', 'build', 'condition', 'weaknesses', 'notable_skills'],
     'State': ['alert_level', 'current_action', 'location', 'region'],
-    'Awareness': ['awareness_peak', 'awareness_last_raised', 'last_signal_context', 'last_signal_strength'],
+    'Awareness': ['awareness_baseline', 'awareness_peak', 'awareness_last_raised', 'last_signal_context', 'last_signal_strength'],
 };
 
 const PLAYER_SECTIONS = {
-    'Identity': ['narrative', 'class', 'race', 'dominant_trait'],
+    'Identity': ['name', 'narrative', 'class', 'race', 'dominant_trait'],
     'State': ['location', 'region', 'gold', 'notable_actions', 'courage'],
+};
+
+const LOCATION_SECTIONS = {
+    'Identity': ['name', 'description'],
+    'State': ['region'],
 };
 
 
@@ -26,6 +32,38 @@ function createPropRow(k, v) {
 	else if (v === false) { valClass += ' bool-false'; display = 'false'; }
 	row.innerHTML = `<span class="prop-key">${k}</span><span class="${valClass}">${display}</span>`;
 	return row;
+}
+
+function createDerivedRow(k, v) {
+	const row = document.createElement('div');
+	row.className = 'prop-row derived';
+	row.innerHTML = `<span class="prop-key">${k}</span><span class="prop-val">${v}</span>`;
+	return row;
+}
+
+// Values the engine computes rather than stores. Without these you cannot tell
+// from the inspector why an NPC did or did not notice something.
+function appendPerceptionReadout(list, node) {
+	const header = document.createElement('div');
+	header.className = 'section-label';
+	header.style.marginTop = '12px';
+	header.textContent = 'Perception';
+	list.appendChild(header);
+
+	const content = document.createElement('div');
+	content.appendChild(createDerivedRow('resting', baselineOf(node).toFixed(2)));
+	content.appendChild(createDerivedRow('current', getAwareness(node).toFixed(2)));
+	content.appendChild(createDerivedRow('notices at', `≥ ${thresholdOf(node).toFixed(2)}`));
+
+	const meter = document.createElement('div');
+	meter.className = 'meter';
+	const fill = document.createElement('div');
+	fill.className = 'meter-fill';
+	fill.style.width = `${Math.round(alertness(node) * 100)}%`;
+	meter.appendChild(fill);
+	content.appendChild(meter);
+
+	list.appendChild(content);
 }
 
 
@@ -49,9 +87,13 @@ export function selectNode(d) {
 	badge.innerHTML = `<span class="prop-key">type</span><span class="prop-val" style="color:${nodeColor(d.node_type)}">${d.node_type}</span>`;
 	list.appendChild(badge);
   
-	const sections = d.node_type === 'npc' ? NPC_SECTIONS 
-	: d.node_type === 'player' ? PLAYER_SECTIONS 
-	: null; 
+	const sections = d.node_type === 'npc' ? NPC_SECTIONS
+	: d.node_type === 'player' ? PLAYER_SECTIONS
+	: (d.node_type === 'location' || d.node_type === 'scene') ? LOCATION_SECTIONS
+	: null;
+
+	// derived perception readout sits above the raw props
+	if (d.node_type === 'npc') appendPerceptionReadout(list, d);
 
 	if (sections) {
 		// track which props have been placed in a section
@@ -107,7 +149,10 @@ export function selectNode(d) {
 			});
 		}
 
-		requestNodeDetail(d.id);
+		// only npc/player have private namespaces worth expanding
+		if (d.node_type === 'npc' || d.node_type === 'player') {
+			requestNodeDetail(d.id);
+		}
 	} else {
 		// flat display for locations, factions, etc.
 		Object.entries(props).forEach(([k, v]) => {

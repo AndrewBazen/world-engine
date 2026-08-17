@@ -50,6 +50,35 @@ impl ESGraph {
         self.nodes.insert(key, node);
     }
 
+    /// Insert, or fold into the node already at this key.
+    ///
+    /// Models declare the same node several times in one patch constantly. With
+    /// a plain `insert` the last declaration replaced the earlier ones outright,
+    /// so a block's properties vanished with nothing reported.
+    pub fn merge_node(&mut self, node: ESNode) {
+        let key = Self::make_key(&node.namespace, &node.node_type, &node.id);
+        match self.nodes.get_mut(&key) {
+            Some(existing) => {
+                for (k, v) in node.props {
+                    existing.props.insert(k, v);
+                }
+                for edge in node.edges {
+                    let duplicate = existing.edges.iter().any(|e| {
+                        e.label == edge.label
+                            && e.target_type == edge.target_type
+                            && e.target_id == edge.target_id
+                    });
+                    if !duplicate {
+                        existing.edges.push(edge);
+                    }
+                }
+            }
+            None => {
+                self.nodes.insert(key, node);
+            }
+        }
+    }
+
     pub fn get(&self, namespace: &str, node_type: &str, id: &str) -> Option<&ESNode> {
         let key = Self::make_key(namespace, node_type, id);
         self.nodes.get(&key)

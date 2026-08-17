@@ -1,13 +1,10 @@
 use axum::{
-    extract::{State, WebSocketUpgrade},
-    extract::ws::{WebSocket, Message},
-    response::Response,
-    routing::get,
-    Router,
+    Router, extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}}, response::Response, routing::get,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use futures::StreamExt;
+use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 use crate::{graph::ESGraph, state::AppState};
 
@@ -28,6 +25,14 @@ pub enum ServerMessage {
         context: String,
         absorbed: bool,
         ambient: bool,
+        /// The signal passed through a non-perceiving node (an item, a place,
+        /// a faction) on its way somewhere else. Not an absorb, not an ignore.
+        #[serde(default)]
+        transit: bool,
+        /// Ring index from the origin. The client staggers its animation by
+        /// this rather than the engine sleeping between rings.
+        #[serde(default)]
+        hop: u32,
     },
     #[serde(rename = "node_update")]
     NodeUpdate {
@@ -81,19 +86,48 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     // send snapshot of current graph on connect
     let snapshot = build_snapshot(&state).await;
     if let Ok(msg) = serde_json::to_string(&snapshot) {
-        let _ = socket.send(Message::Text(msg)).await;
+        let _ = socket.send(Message::Text(msg.into())).await;
     }
 
     //subscribe to broadcasts
     let mut rx = state.tx.subscribe();
 
+    // Replies meant for THIS client only. Node detail used to go out over the
+    // broadcast channel, so one person clicking a node opened the inspector
+    // for everybody.
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<ServerMessage>();
+
     loop {
         tokio::select! {
             // broadcast from engine -> forward to this client
-            Ok(msg) = rx.recv() => {
+            broadcast = rx.recv() => {
+                match broadcast {
+                    Ok(msg) => {
+                        if let Ok(text) = serde_json::to_string(&msg) {
+                            if socket.send(Message::Text(text.into())).await.is_err() {
+                                break;  // client disconnected
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Slow client. Resync with a fresh snapshot rather than
+                        // dropping the connection.
+                        eprintln!("client lagged {} messages, resyncing", n);
+                        let snapshot = build_snapshot(&state).await;
+                        if let Ok(text) = serde_json::to_string(&snapshot) {
+                            if socket.send(Message::Text(text.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // direct reply to this client
+            Some(msg) = reply_rx.recv() => {
                 if let Ok(text) = serde_json::to_string(&msg) {
-                    if socket.send(Message::Text(text)).await.is_err() {
-                        break;  // client disconnected
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
                     }
                 }
             }
@@ -101,8 +135,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             Some(Ok(Message::Text(text))) = socket.next() => {
                 let state_clone = state.clone();
                 let text_clone = text.clone();
+                let reply = reply_tx.clone();
                 tokio::spawn(async move {
-                    handle_client_message(&text_clone, &state_clone).await;
+                    handle_client_message(&text_clone, &state_clone, reply).await;
                 });
             }
             else => break,
@@ -138,7 +173,11 @@ pub async fn build_snapshot(state: &Arc<AppState>) -> ServerMessage {
 }
 
 // handle trigger signal requests from thew browser
-async fn handle_client_message(text: &str, state: &Arc<AppState>) {
+async fn handle_client_message(
+    text: &str,
+    state: &Arc<AppState>,
+    reply: tokio::sync::mpsc::UnboundedSender<ServerMessage>,
+) {
     println!("handle_client_message: {}", text);
     #[derive(Deserialize)]
     #[serde(tag = "type")]
@@ -182,7 +221,7 @@ async fn handle_client_message(text: &str, state: &Arc<AppState>) {
             }
             ClientMessage::NodeDetail { node_id } => {
                 let detail = build_node_detail(state, &node_id).await;
-                let _ = state.tx.send(detail);
+                let _ = reply.send(detail);
             }
         }
     }

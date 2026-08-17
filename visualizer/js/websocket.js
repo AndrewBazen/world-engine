@@ -59,7 +59,7 @@ export function connect() {
 
 
 		if (msg.type === 'signal_hop') {
-			animateHop(msg.from, msg.to, msg.absorbed, msg.ambient);
+			animateHop(msg.from, msg.to, msg.absorbed, msg.ambient, msg.transit, msg.hop);
 			logHop(msg);
 		}
 

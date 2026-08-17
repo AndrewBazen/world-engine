@@ -25,7 +25,7 @@ Respond with ONLY the category name. Nothing else."#,
         input = input,
     );
 
-    let response = call_ollama(super::CLASSIFIER_MODEL, &prompt).await?;
+    let response = call_ollama(super::classifier_model(), &prompt).await?;
     let category = response.trim().to_lowercase();
 
     match category.as_str() {
@@ -53,7 +53,7 @@ Respond with ONLY the location ID that best matches. Nothing else."#,
         input = input,
     );
 
-    let response = call_ollama(super::CLASSIFIER_MODEL, &prompt).await?;
+    let response = call_ollama(super::classifier_model(), &prompt).await?;
     Ok(response.trim().to_string())
 }
 
@@ -90,7 +90,7 @@ Respond with ONLY "act" or "ignore". Nothing else."#,
         signal = signal_context,
     );
 
-    let response = call_ollama(super::CLASSIFIER_MODEL, &prompt).await?;
+    let response = call_ollama(super::classifier_model(), &prompt).await?;
     let answer = response.trim().to_lowercase();
 
     Ok(answer.contains("act"))

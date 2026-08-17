@@ -20,7 +20,7 @@ pub async fn handle_movement(
 
         let locs: Vec<String> = graph.nodes.iter()
             .filter(|(_, n)| n.node_type == "location")
-            .map(|(k, _)| k.strip_prefix("location").unwrap_or(k).to_string())
+            .map(|(k, _)| k.strip_prefix("location:").unwrap_or(k).to_string())
             .collect();
 
         (current, locs)

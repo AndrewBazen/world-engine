@@ -35,8 +35,13 @@ pub async fn npc_agent_tick(
         println!("ollama npc responded:\n{}", patch_text);
     }
     
-    let patch = parse(&patch_text);
+    let mut patch = parse(&patch_text);
     println!("npc patch parsed, {} nodes", patch.nodes.len());
+
+    {
+        let graph = state.graph.read().await;
+        scope_npc_patch(&mut patch, npc_id, &graph);
+    }
 
     // check if the NPC decided to emit a signal (look for signal_emit prop)
     let emitted_signal = patch.nodes.values()
@@ -115,6 +120,103 @@ pub async fn npc_agent_tick(
     Ok(emitted_signal.map(|(context, strength)| {
         crate::signal::EventSignal::new(npc_id, strength, &context)
     }))
+}
+
+/// An NPC narrates itself and may update objects and places that already exist.
+/// It may not author another character, and it may not conjure new nodes.
+///
+/// Two failures this prevents. Authoring other characters means one NPC's patch
+/// rewrites every other NPC's narrative, and the next NPC to tick reads that
+/// fabrication back as its own identity — the whole cast gets ventriloquised by
+/// whoever reacted first. Creating nodes means a reacting NPC invents places
+/// that don't exist (`@location:market` beside the real `market_district`) and
+/// the world quietly accumulates phantoms. World-building belongs to the
+/// game-master tier, not to a guard noticing something.
+fn scope_npc_patch(patch: &mut ESGraph, npc_id: &str, world: &ESGraph) {
+    patch.nodes.retain(|key, _| {
+        if key == npc_id {
+            return true;
+        }
+        if key.starts_with("npc:") || key.starts_with("player:") {
+            println!("  rejected {} writing to {}", npc_id, key);
+            return false;
+        }
+        if !world.nodes.contains_key(key) {
+            println!("  rejected {} creating {}", npc_id, key);
+            return false;
+        }
+        true
+    });
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use crate::graph::{ESNode, ESValue};
+
+    fn a_world() -> ESGraph {
+        let mut w = ESGraph::new();
+        w.insert(ESNode::new("world", "npc", "john_smith"));
+        w.insert(ESNode::new("world", "npc", "jin_lyons"));
+        w.insert(ESNode::new("world", "player", "andrew"));
+        w.insert(ESNode::new("world", "location", "market_district"));
+        w.insert(ESNode::new("world", "item", "dropped_coin"));
+        w
+    }
+
+    #[test]
+    fn test_npc_cannot_author_other_characters() {
+        let world = a_world();
+        let mut patch = ESGraph::new();
+        patch.insert(
+            ESNode::new("world", "npc", "john_smith")
+                .with_prop("alert_level", ESValue::Text("high".to_string())),
+        );
+        patch.insert(
+            ESNode::new("world", "npc", "jin_lyons")
+                .with_prop("narrative", ESValue::Text("Jin decides to flee.".to_string())),
+        );
+        patch.insert(
+            ESNode::new("world", "player", "andrew")
+                .with_prop("narrative", ESValue::Text("Andrew panics.".to_string())),
+        );
+
+        scope_npc_patch(&mut patch, "npc:john_smith", &world);
+
+        assert!(patch.nodes.contains_key("npc:john_smith"), "must keep its own node");
+        assert!(!patch.nodes.contains_key("npc:jin_lyons"), "must not write another NPC");
+        assert!(!patch.nodes.contains_key("player:andrew"), "must not write the player");
+    }
+
+    #[test]
+    fn test_npc_may_update_existing_world_objects() {
+        let world = a_world();
+        let mut patch = ESGraph::new();
+        patch.insert(ESNode::new("world", "npc", "john_smith"));
+        patch.insert(ESNode::new("world", "location", "market_district"));
+        patch.insert(ESNode::new("world", "item", "dropped_coin"));
+
+        scope_npc_patch(&mut patch, "npc:john_smith", &world);
+
+        assert!(patch.nodes.contains_key("location:market_district"));
+        assert!(patch.nodes.contains_key("item:dropped_coin"));
+    }
+
+    #[test]
+    fn test_npc_cannot_invent_places() {
+        let world = a_world();
+        let mut patch = ESGraph::new();
+        patch.insert(ESNode::new("world", "npc", "john_smith"));
+        // the real place is `market_district`; this is a phantom beside it
+        patch.insert(ESNode::new("world", "location", "market"));
+
+        scope_npc_patch(&mut patch, "npc:john_smith", &world);
+
+        assert!(
+            !patch.nodes.contains_key("location:market"),
+            "a reacting NPC must not conjure places that do not exist"
+        );
+    }
 }
 
 fn build_npc_context(graph: &ESGraph, npc_id: &str, signal_context: &str, signal_strength: f64) -> String {
@@ -262,5 +364,5 @@ async fn call_npc_agent(context: &str, npc_name: &str) -> Result<String, String>
         name = npc_name,
         context = context
     );
-    crate::llm::call_ollama(crate::llm::NPC_MODEL, &prompt).await
+    crate::llm::call_ollama_capped(crate::llm::npc_model(), &prompt, crate::llm::NPC_TOKENS).await
 }

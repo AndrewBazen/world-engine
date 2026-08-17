@@ -208,15 +208,21 @@ pub fn prune_lowest(graph: &mut ESGraph, npc_id: &str, count: usize) {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-/// Generate a unique event ID from timestamp
+/// Generate a unique event ID. The timestamp alone collides when several
+/// memories are written in the same millisecond — which happens on every
+/// multi-NPC reaction — and `graph.insert` overwrites by key, silently
+/// losing all but the last. The counter makes it collision-free.
 fn generate_event_id() -> String {
-    // use current timestamp millis for uniqueness
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
 
-    format!("ev_{}", now)
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("ev_{}_{}", now, seq)
 }
 
 /// Extract the npc name from an npc_id like "npc:guard" -> "guard"

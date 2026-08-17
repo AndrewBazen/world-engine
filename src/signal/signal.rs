@@ -8,13 +8,16 @@ use crate::stats;
 
 pub const DISSIPATION_THRESHOLD: f64 = 0.05;
 pub const DECAY_FACTOR: f64 = 0.7;
-pub const AMBIENT_DECAY: f64 = 0.5;
+pub const AMBIENT_DECAY: f64 = 0.7;
 
 pub struct EventSignal {
     pub origin_id: String,
     pub strength: f64,
     pub context: String,
     pub visited: HashSet<String>,
+    /// How many hops from the origin. Sent to clients so they can pace the
+    /// animation themselves instead of the engine sleeping to do it for them.
+    pub depth: u32,
 }
 
 impl EventSignal {
@@ -26,6 +29,7 @@ impl EventSignal {
             strength,
             context: context.to_string(),
             visited,
+            depth: 0,
         }
     }
 }
@@ -39,6 +43,7 @@ impl EventSignal {
             strength,
             context: context.to_string(),
             visited,
+            depth: 0,
         }
     }
 }
@@ -82,8 +87,14 @@ fn absorb(node: &mut ESNode, baseline: f64, current_awareness: f64, signal: &Eve
         ESValue::Number(strength),
     );
 
-    // raise awareness — perception checks use this for heightened alertness
-    let new_peak = (current_awareness + strength * 0.3).min(1.0).max(baseline);
+    // Raise awareness toward the level this event justifies — saturating, not
+    // accumulating. The old form added `strength * 0.3` to the CURRENT value on
+    // every absorption, so four signals in one turn ratcheted an NPC from 0.50
+    // to 0.99 and left them with a threshold near zero, absorbing everything
+    // for the next few minutes. Alertness should reflect how loud the loudest
+    // thing was, not how many things there were.
+    let alerted_to = baseline + (1.0 - baseline) * strength;
+    let new_peak = current_awareness.max(alerted_to).min(1.0).max(baseline);
 
     node.props.insert(
         "awareness_peak".to_string(),
@@ -133,12 +144,21 @@ fn node_location(node: &ESNode) -> Option<String> {
 ///
 /// Returns a list of NPCs that absorbed the signal and need agent calls.
 pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Vec<AbsorbedSignal>, HashSet<String>) {
-    let mut all_visited: HashSet<String> = HashSet::new();
-    all_visited.insert(initial_signal.origin_id.clone());
     // only propagate from world nodes
     if !ESGraph::is_world_key(&initial_signal.origin_id) {
         return (Vec::new(), HashSet::new());
     }
+
+    // ONE visited set for the whole traversal.
+    //
+    // This used to be cloned into every continuation, so a node could be
+    // reached again down every other path. That is quadratic on its own — but
+    // absorbing also RAISES awareness, which lowers the threshold, so an NPC
+    // re-absorbed its own echo arriving back from a neighbour, queued another
+    // continuation, and the frontier grew instead of shrinking. Combined with a
+    // sleep per dequeue it turned one action into minutes of wall clock.
+    let mut all_visited: HashSet<String> = initial_signal.visited.clone();
+    all_visited.insert(initial_signal.origin_id.clone());
 
     let mut absorbed_npcs: Vec<AbsorbedSignal> = Vec::new();
     let mut queue: VecDeque<EventSignal> = VecDeque::new();
@@ -166,24 +186,33 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
             let neighbor_id = format!("{}:{}", edge.target_type, edge.target_id);
 
             // skip visited, private namespace, and below-threshold
-            if signal.visited.contains(&neighbor_id) { continue; }
+            if all_visited.contains(&neighbor_id) { continue; }
             if !ESGraph::is_world_key(&neighbor_id) { continue; }
 
             let arriving = signal.strength * edge.affinity;
             if arriving < DISSIPATION_THRESHOLD { continue; }
 
-            let (is_npc, perceived, neighbor_location, baseline, awareness) = {
+            let neighbor_state = {
                 let graph = state.graph.read().await;
-                match graph.nodes.get(&neighbor_id) {
-                    Some(n) => (
+                graph.nodes.get(&neighbor_id).map(|n| {
+                    (
                         n.node_type == "npc",
                         perceives(n, &graph, arriving),
                         node_location(n),
                         stats::get_baseline_awareness(n, &graph),
                         stats::current_awareness(n, &graph),
-                    ),
-                    None => (false, false, None, 0.0, 0.0),
-                }
+                    )
+                })
+            };
+
+            // A signal cannot travel through something that is not there.
+            // Dangling edges are common — an agent writes an edge to a node it
+            // never created, or the target was removed — and treating "missing"
+            // as "not an NPC" sent a transit hop to a node the visualizer has
+            // never heard of, every single propagation, forever.
+            let Some((is_npc, perceived, neighbor_location, baseline, awareness)) = neighbor_state
+            else {
+                continue;
             };
 
 
@@ -195,6 +224,8 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                     context: signal.context.clone(),
                     absorbed: perceived,
                     ambient: false,
+                    transit: false,
+                    hop: signal.depth + 1,
                 });
 
                 // absorb and update awareness
@@ -225,26 +256,53 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                 });
 
                 // queue continuation along this node's edges
-                let mut next = EventSignal {
-                    origin_id: neighbor_id.clone(),
+                all_visited.insert(neighbor_id.clone());
+                next_signals.push(EventSignal {
+                    origin_id: neighbor_id,
                     strength: arriving * DECAY_FACTOR,
                     context: signal.context.clone(),
-                    visited: signal.visited.clone(),
-                };
-                all_visited.insert(neighbor_id.clone());
-                next.visited.insert(neighbor_id);
-                next_signals.push(next);
+                    visited: HashSet::new(), // the traversal-wide set is authoritative
+                    depth: signal.depth + 1,
+                });
             } else if !is_npc {
+                // A place, item or faction. It never absorbs, but it carries
+                // the signal onward — emit a hop so the route is visible
+                // instead of pulses appearing out of nowhere.
+                let _ = state.tx.send(ServerMessage::SignalHop {
+                    from: signal.origin_id.clone(),
+                    to: neighbor_id.clone(),
+                    strength: arriving,
+                    context: signal.context.clone(),
+                    absorbed: false,
+                    ambient: false,
+                    transit: true,
+                    hop: signal.depth + 1,
+                });
+
                 // queue continuation along this node's edges
-                let mut next = EventSignal {
-                    origin_id: neighbor_id.clone(),
+                all_visited.insert(neighbor_id.clone());
+                next_signals.push(EventSignal {
+                    origin_id: neighbor_id,
                     strength: arriving * DECAY_FACTOR,
                     context: signal.context.clone(),
-                    visited: signal.visited.clone(),
-                };
-                all_visited.insert(neighbor_id.clone());
-                next.visited.insert(neighbor_id);
-                next_signals.push(next);
+                    visited: HashSet::new(),
+                    depth: signal.depth + 1,
+                });
+            } else {
+                // An NPC that failed its perception check. The signal stops
+                // here, and that miss is worth seeing. Mark it visited so the
+                // same miss is not re-reported from every other direction.
+                let _ = state.tx.send(ServerMessage::SignalHop {
+                    from: signal.origin_id.clone(),
+                    to: neighbor_id.clone(),
+                    strength: arriving,
+                    context: signal.context.clone(),
+                    absorbed: false,
+                    ambient: false,
+                    transit: false,
+                    hop: signal.depth + 1,
+                });
+                all_visited.insert(neighbor_id);
             }
         }
 
@@ -256,7 +314,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
 
             let nearby_npcs = {
                 let graph = state.graph.read().await;
-                npcs_at_location(&graph, location, &signal.visited)
+                npcs_at_location(&graph, location, &all_visited)
             };
 
             for npc_id in &nearby_npcs {
@@ -281,6 +339,8 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                         context: signal.context.clone(),
                         absorbed: true,
                         ambient: true,
+                        transit: false,
+                        hop: signal.depth + 1,
                     });
 
 
@@ -305,22 +365,23 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                     });
 
                     // ambient-absorbed NPCs also propagate structurally
-                    let mut next = EventSignal {
+                    all_visited.insert(npc_id.clone());
+                    next_signals.push(EventSignal {
                         origin_id: npc_id.clone(),
                         strength: ambient_strength * DECAY_FACTOR,
                         context: signal.context.clone(),
-                        visited: signal.visited.clone(),
-                    };
-                    all_visited.insert(npc_id.clone());
-                    next.visited.insert(npc_id.clone());
-                    next_signals.push(next);
+                        visited: HashSet::new(),
+                        depth: signal.depth + 1,
+                    });
                 }
             }
         }
 
-        // wait after each hop ring before expanding further
-        tokio::time::sleep(tokio::time::Duration::from_millis(350)).await;
-
+        // No sleep here. Pacing the animation used to be done by stalling the
+        // simulation 350ms per DEQUEUED NODE — not per ring, despite the old
+        // comment — so a twenty node frontier cost seven seconds inside the
+        // world model, before a single NPC agent had even been called. Hops now
+        // carry their ring index and the client schedules its own animation.
         for next in next_signals {
             queue.push_back(next);
         }
@@ -380,7 +441,7 @@ mod tests {
             "slipped past the garrison unseen",
         );
 
-        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
+        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // guard should have absorbed (strong signal, default perception)
         assert!(absorbed.iter().any(|a| a.npc_id == "npc:guard"));
@@ -435,7 +496,7 @@ mod tests {
             "stole bread from merchant stall",
         );
 
-        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
+        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // merchant absorbed via structural edge
         assert!(absorbed.iter().any(|a| a.npc_id == "npc:merchant"));
@@ -473,10 +534,74 @@ mod tests {
             "quietly pocketed a coin",
         );
 
-        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
+        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // dim guard should NOT perceive a weak signal
         assert!(!absorbed.iter().any(|a| a.npc_id == "npc:dim_guard"));
+    }
+
+    #[tokio::test]
+    async fn test_dangling_edges_emit_no_hops() {
+        let mut graph = ESGraph::new();
+        graph.insert(
+            ESNode::new("world", "player", "andrew")
+                .with_prop("location", ESValue::Text("market".to_string()))
+                // these two targets do not exist
+                .with_edge("saw", "npc", "ghost")
+                .with_edge("entered", "location", "nowhere"),
+        );
+
+        let state = AppState::new_without_db(graph);
+        let mut rx = state.tx.subscribe();
+
+        let sig = EventSignal::new("player:andrew", 0.9, "looks around");
+        let _ = crate::signal::propagate(state.clone(), sig).await;
+
+        let mut targets = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let crate::server::ServerMessage::SignalHop { to, .. } = msg {
+                targets.push(to);
+            }
+        }
+
+        assert!(
+            targets.is_empty(),
+            "a signal must not travel through nodes that do not exist, got {:?}",
+            targets
+        );
+    }
+
+    #[tokio::test]
+    async fn test_awareness_saturates_instead_of_ratcheting() {
+        let mut graph = ESGraph::new();
+        graph.insert(
+            ESNode::new("world", "player", "andrew")
+                .with_prop("location", ESValue::Text("market".to_string())),
+        );
+        graph.insert(
+            ESNode::new("world", "npc", "guard")
+                .with_prop("location", ESValue::Text("market".to_string())),
+        );
+        stats::write_stat_block(&mut graph, "guard", &stats::StatBlock::default());
+
+        let state = AppState::new_without_db(graph);
+
+        // the same event, over and over
+        for _ in 0..5 {
+            let sig = EventSignal::new("player:andrew", 0.8, "a scuffle in the market");
+            let _ = crate::signal::propagate(state.clone(), sig).await;
+        }
+
+        let graph = state.graph.read().await;
+        let guard = graph.get("world", "npc", "guard").unwrap();
+        let peak = guard.get_number("awareness_peak").unwrap();
+
+        assert!(
+            peak < 0.85,
+            "repeated identical signals must not ratchet awareness toward 1.0 \
+             (an NPC at 0.99 has a threshold near zero and absorbs everything), got {}",
+            peak
+        );
     }
 
     #[tokio::test]
@@ -508,7 +633,7 @@ mod tests {
             "drew a weapon",
         );
 
-        let (absorbed, visited) = crate::signal::propagate(state.clone(), signal).await;
+        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
 
         // guard should absorb, but no inventory items should appear
         assert!(absorbed.iter().any(|a| a.npc_id == "npc:guard"));

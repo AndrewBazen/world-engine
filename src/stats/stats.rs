@@ -406,6 +406,17 @@ pub fn write_stat_block(graph: &mut ESGraph, npc_id: &str, stats: &StatBlock) {
         ESValue::Number(stats.skills.investigation as f64));
 
     graph.insert(node);
+
+    // Mirror the derived sensitivity onto the NPC node itself. Stat blocks live
+    // in a private namespace and never reach the browser, so without this the
+    // visualizer had to hardcode a baseline and guess.
+    let baseline = perception_from_passive(stats.passive_perception as f64);
+    if let Some(npc) = graph.get_mut("world", "npc", npc_id) {
+        npc.props.insert(
+            "awareness_baseline".to_string(),
+            ESValue::Number(baseline),
+        );
+    }
 }
 
 // ── Read helpers ─────────────────────────────────────────────
@@ -440,14 +451,16 @@ pub fn has_stat_block(graph: &ESGraph, npc_id: &str) -> bool {
 
 // ── Awareness / perception ────────────────────────────────────
 
-pub fn get_baseline_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
-    let passive = get_passive(graph, &node.id, "passive_perception");
-    ((passive - 1.0) / 29.0).clamp(0.1, 0.95)
+/// The single definition of how passive_perception maps to a 0..1 sensitivity.
+/// 10 (average) → 0.50, 14 (trained) → 0.70, 5 (poor) → 0.25.
+/// The signal threshold is `1.0 - this`, so an average NPC notices anything
+/// arriving at strength 0.5 or above.
+pub fn perception_from_passive(passive: f64) -> f64 {
+    (passive / 20.0).clamp(0.05, 0.95)
 }
 
-pub fn get_intelligence_ceiling(node: &ESNode, graph: &ESGraph) -> f64 {
-    let intelligence = get_stat(graph, &node.id, "intelligence");
-    ((intelligence - 1.0) / 19.0).clamp(0.1, 1.0)
+pub fn get_baseline_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
+    perception_from_passive(get_passive(graph, &node.id, "passive_perception"))
 }
 
 pub fn current_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
@@ -467,8 +480,9 @@ pub fn current_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
     (baseline + decayed).clamp(0.0, 1.0)
 }
 
+/// What this NPC can currently detect. Driven by senses and alertness only —
+/// intelligence deliberately does not enter here. A clever NPC is not
+/// automatically an observant one.
 pub fn current_perception(node: &ESNode, graph: &ESGraph) -> f64 {
-    let awareness = current_awareness(node, graph);
-    let ceiling = get_intelligence_ceiling(node, graph);
-    awareness.max(ceiling)
+    current_awareness(node, graph)
 }

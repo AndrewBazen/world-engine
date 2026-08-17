@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::graph::{ESGraph};
 use crate::state::AppState;
 
-pub const VERBOSE: bool = false;
+pub const VERBOSE: bool = true;
 
 pub struct PlayerAction {
     pub player_id: String,
@@ -27,8 +27,10 @@ pub fn merge_patch(world: &mut ESGraph, patch: ESGraph, allowed_namespaces: &[&s
         if key.starts_with("remove:") { continue; }
 
         let namespace = &patch_node.namespace;
+        // Prefix match must stop at a path separator, otherwise `inventory/andrew`
+        // would also authorise writes to `inventory/andrew2`.
         let is_allowed = allowed_namespaces.iter().any(|ns| {
-            namespace == *ns || namespace.starts_with(ns)
+            namespace == *ns || namespace.starts_with(&format!("{}/", ns))
         });
 
         if !is_allowed {
@@ -54,6 +56,51 @@ pub fn merge_patch(world: &mut ESGraph, patch: ESGraph, allowed_namespaces: &[&s
         } else {
             world.nodes.insert(key, patch_node);
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use crate::graph::{ESNode, ESValue};
+
+    #[test]
+    fn test_sibling_namespace_is_rejected() {
+        let mut world = ESGraph::new();
+        let mut patch = ESGraph::new();
+        patch.insert(
+            ESNode::new("inventory/andrew2", "item", "stolen")
+                .with_prop("name", ESValue::Text("Stolen".to_string())),
+        );
+
+        merge_patch(&mut world, patch, &["world", "inventory/andrew"]);
+
+        assert!(
+            world.nodes.get("inventory/andrew2/item:stolen").is_none(),
+            "andrew must not be able to write into andrew2's namespace"
+        );
+    }
+
+    #[test]
+    fn test_own_namespace_is_allowed() {
+        let mut world = ESGraph::new();
+        let mut patch = ESGraph::new();
+        patch.insert(ESNode::new("inventory/andrew", "item", "sword"));
+
+        merge_patch(&mut world, patch, &["world", "inventory/andrew"]);
+
+        assert!(world.nodes.get("inventory/andrew/item:sword").is_some());
+    }
+
+    #[test]
+    fn test_world_prefix_does_not_authorise_lookalike() {
+        let mut world = ESGraph::new();
+        let mut patch = ESGraph::new();
+        patch.insert(ESNode::new("world_secret", "plot", "twist"));
+
+        merge_patch(&mut world, patch, &["world"]);
+
+        assert!(world.nodes.get("world_secret/plot:twist").is_none());
     }
 }
 

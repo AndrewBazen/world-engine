@@ -1,4 +1,4 @@
-use redb::{Database, TableDefinition, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use crate::graph::{ESGraph, ESNode, ESEdge, ESValue};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
