@@ -179,7 +179,7 @@ pub fn parse(input: &str) -> ESGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::serialize;
+    use crate::graph::serializer::{self, to_es_string};
 
     #[test]
     fn test_parse_node_declaration() {
@@ -260,7 +260,7 @@ mod tests {
     damage: 8
     ";
         let graph = parse(input);
-        let serialized = serialize(&graph);
+        let serialized = to_es_string(&graph);
         let reparsed = parse(&serialized);
 
         // both graphs should have the same nodes
