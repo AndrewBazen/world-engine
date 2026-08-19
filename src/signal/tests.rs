@@ -81,10 +81,15 @@ async fn test_weak_signal_filtered_by_perception() {
     graph.insert(ESNode::new("world", "player", "andrew").with_edge("near", "npc", "dim_guard"));
     graph.insert(ESNode::new("world", "npc", "dim_guard"));
 
-    let mut low = stats::StatBlock::default();
-    low.wisdom = 3;
-    low.skills.perception = -2;
-    stats::write_stat_block(&mut graph, "dim_guard", &low.clamp());
+    // Feeble awareness → wisdom 6 → passive_perception 8 → notices only 0.60+
+    let dim = stats::stat_block_from(
+        &stats::Grades {
+            awareness: stats::Grade::Feeble,
+            ..stats::Grades::default()
+        },
+        &[],
+    );
+    stats::write_stat_block(&mut graph, "dim_guard", &dim);
 
     let state = AppState::new_without_db(graph);
 

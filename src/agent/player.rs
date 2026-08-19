@@ -1,6 +1,7 @@
 use super::{PlayerAction, format_value, merge_patch, VERBOSE};
 use crate::agent::npc::npc_agent_tick;
 use crate::graph::{ESGraph, ESEdge, parse};
+use crate::stats::refresh_stat_block;
 use std::collections::HashSet;
 use std::sync::Arc;
 use crate::state::AppState;
@@ -58,7 +59,15 @@ pub async fn agent_tick(
         let mut patch = patch;
         patch.nodes.retain(|key, node| {
             let is_character = key.starts_with("npc:") || key.starts_with("player:");
-            if !is_character || graph.nodes.contains_key(key) {
+            if !is_character {
+                return true;
+            }
+            if graph.nodes.contains_key(key) {
+                // Someone who already exists. Their narrative and state are
+                // fair game; who they are is not.
+                if crate::stats::strip_grade_fields(node) {
+                    println!("ignored attempt to regrade existing character {}", key);
+                }
                 return true;
             }
             match validate_new_character(key, node, &graph) {
@@ -154,11 +163,14 @@ pub async fn agent_tick(
 
     if !new_npcs.is_empty() {
         let mut graph = state.graph.write().await;
-        for (key, node) in new_npcs {
-            let npc_id = key.split(':').nth(1).unwrap_or("").to_string();
-            let stats = crate::stats::generate_stats(&node);
-            crate::stats::write_stat_block(&mut graph, &npc_id, &stats);
-            println!("generated stat block for {}", npc_id);
+        for key in new_npcs {
+            let complaints = refresh_stat_block(&mut graph, &key.0);
+            if complaints.is_empty() {
+                println!("stats for {}", key.0);
+            } else {
+                println!("stats for {} - {} problems(s):", key.0, complaints.len());
+                for c in &complaints { println!("    {}", c); }
+            }
         }
     }
 
@@ -616,9 +628,39 @@ async fn call_player_agent(context: &str, player_name: &str) -> Result<String, S
     - give them a real personal name, never a role word
       CORRECT: @npc:mira_fenn, @npc:oda_veyle
       WRONG:   @npc:guard, @npc:merchant, @npc:npc, @npc:player
-    - give them at least occupation and personality
+    - give them occupation, personality and location
     - put them at the player's location
+    - grade them (below). An ungraded person is a blank average nobody chose.
     Never add someone who is already in the world under a different name.
+
+    GRADING A NEW PERSON
+    Every new npc needs these five fields. Use ONLY these five words for the
+    four grades: feeble, poor, average, capable, exceptional.
+
+      physique   — strength and toughness
+      agility    — speed, balance, hands
+      awareness  — how much they notice; this decides what they hear
+      presence   — bearing and persuasion
+      proficient — comma separated, ONLY from this list:
+                   athletics, acrobatics, stealth, perception, insight,
+                   persuasion, deception, intimidation, sleight_of_hand,
+                   investigation
+
+    Grade them for who they are, not to be generous. Most people are average at
+    most things. Reserve exceptional for someone genuinely remarkable at it.
+
+    @npc:mira_fenn
+    occupation: innkeeper
+    personality: watchful
+    location: market_district
+    physique: average
+    agility: poor
+    awareness: capable
+    presence: capable
+    proficient: insight, persuasion
+
+    NEVER change the grades of someone who already exists. Those are set once,
+    when a person enters the world.
 
     EDGESCRIPT SYNTAX
     @type:id                  — world node declaration

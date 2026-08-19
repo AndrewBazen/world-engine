@@ -10,7 +10,7 @@ mod db;
 #[cfg(test)] mod tests;
 
 
-use crate::graph::{parse, ESGraph, ESNode};
+use crate::{graph::{ESGraph, ESNode, parse}, stats::{read_grades, refresh_stat_block}};
 use state::AppState;
 
 fn load_world_dir(path: &str) -> ESGraph {
@@ -187,11 +187,14 @@ async fn main() {
         .count();
     println!("found {} existing stat nodes", existing_stats);
 
-    for (key, node) in new_npcs {
-        let npc_id = key.split(':').nth(1).unwrap_or("").to_string();
-        let stats = crate::stats::generate_stats(&node);
-        crate::stats::write_stat_block(&mut world, &npc_id, &stats);
-        println!("generated stat block for {}", npc_id);
+    for key in new_npcs {
+        let complaints = refresh_stat_block(&mut world, &key.0);
+        if complaints.is_empty() {
+            println!("stats for {}", key.0);
+        } else {
+            println!("stats for {} - {} problems(s):", key.0, complaints.len());
+            for c in &complaints { println!("    {}", c); }
+        }
     }
 
     // now world moves into state — all stat blocks already written

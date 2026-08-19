@@ -2,19 +2,23 @@ use crate::graph::{ESGraph, ESNode, ESValue};
 use crate::state::AppState;
 use crate::{load_world_dir, repair_world};
 
-/// The seed world with stat blocks generated the way main() does it.
+/// The seed world with stat blocks derived the way main() does it.
 fn seeded_world() -> ESGraph {
     let mut world = load_world_dir("data/world");
-    let npcs: Vec<(String, ESNode)> = world
+    let npc_keys: Vec<String> = world
         .nodes
-        .iter()
-        .filter(|(k, _)| k.starts_with("npc:"))
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .keys()
+        .filter(|k| k.starts_with("npc:"))
+        .cloned()
         .collect();
-    for (key, node) in npcs {
-        let npc_id = key.split(':').nth(1).unwrap_or("").to_string();
-        let stats = crate::stats::generate_stats(&node);
-        crate::stats::write_stat_block(&mut world, &npc_id, &stats);
+    for key in npc_keys {
+        let complaints = crate::stats::refresh_stat_block(&mut world, &key);
+        assert!(
+            complaints.is_empty(),
+            "seed world NPC {} has incomplete grades: {:?}",
+            key,
+            complaints
+        );
     }
     world
 }

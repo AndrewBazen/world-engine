@@ -43,6 +43,16 @@ pub async fn npc_agent_tick(
         scope_npc_patch(&mut patch, npc_id, &graph);
     }
 
+    // An NPC narrates itself; it does not get to rewrite who it is. Its own
+    // stat block is printed in its context, so echoing the grades back — or
+    // quietly promoting itself to `exceptional` after a fright — is the
+    // obvious failure mode.
+    for (key, node) in patch.nodes.iter_mut() {
+        if crate::stats::strip_grade_fields(node) {
+            println!("  ignored attempt by {} to regrade {}", npc_id, key);
+        }
+    }
+
     // check if the NPC decided to emit a signal (look for signal_emit prop)
     let emitted_signal = patch.nodes.values()
         .find(|n| n.id == npc_name && n.node_type == "npc")
@@ -284,6 +294,11 @@ async fn call_npc_agent(context: &str, npc_name: &str) -> Result<String, String>
     signal_strength: 0.0 to 1.0 (how noticeable your action is)
 
     You may also update other world nodes if your action affects them (e.g. move to a new location, interact with objects). You may add new edges to represent new relationships.
+
+    NEVER write physique, agility, awareness, presence or proficient. Those are
+    who you are, fixed when you entered the world. Reacting to something does
+    not change them — YOUR STATS above are for context only, do not echo them
+    back. If an event has made you alert, say so in alert_level and narrative.
 
     Output ONLY Edgescript. Nothing else.
 
