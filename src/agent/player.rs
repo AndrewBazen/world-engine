@@ -343,11 +343,8 @@ pub async fn agent_tick(
     Ok(())
 }
 
-
-
-
 /// Collapse emitted signals that say the same thing, keeping the loudest.
-fn dedupe_by_context(
+pub(super) fn dedupe_by_context(
     signals: Vec<crate::signal::EventSignal>,
 ) -> Vec<crate::signal::EventSignal> {
     let mut best: Vec<crate::signal::EventSignal> = Vec::new();
@@ -370,31 +367,6 @@ fn dedupe_by_context(
     best
 }
 
-#[cfg(test)]
-mod cascade_tests {
-    use super::*;
-    use crate::signal::EventSignal;
-
-    #[test]
-    fn test_identical_shouts_collapse_to_the_loudest() {
-        let signals = vec![
-            EventSignal::new("npc:thomas_pellar", 0.8, "shouts: Stop, thief!"),
-            EventSignal::new("npc:john_smith", 0.9, "shouts: Stop, thief!"),
-            EventSignal::new("npc:jin_lyons", 0.5, "slips into the crowd"),
-        ];
-
-        let out = dedupe_by_context(signals);
-
-        assert_eq!(out.len(), 2, "one shout and one slip, not three propagations");
-        let shout = out
-            .iter()
-            .find(|s| s.context.contains("thief"))
-            .expect("the shout survives");
-        assert_eq!(shout.origin_id, "npc:john_smith", "the loudest one wins");
-        assert_eq!(shout.strength, 0.9);
-    }
-}
-
 /// Whether the world may accept this as a new person.
 ///
 /// Emergence needs new characters to be able to appear, so this is deliberately
@@ -402,7 +374,7 @@ mod cascade_tests {
 /// something that isn't a person at all: a malformed id, a type word used as a
 /// name, a duplicate of someone already here under a different node type, and
 /// an empty shell with no description.
-fn validate_new_character(
+pub(super) fn validate_new_character(
     key: &str,
     node: &crate::graph::ESNode,
     world: &ESGraph,
@@ -439,123 +411,6 @@ fn validate_new_character(
     Ok(())
 }
 
-#[cfg(test)]
-mod character_tests {
-    use super::*;
-    use crate::graph::{ESNode, ESValue};
-
-    fn world_with_andrew() -> ESGraph {
-        let mut g = ESGraph::new();
-        g.insert(ESNode::new("world", "player", "andrew"));
-        g
-    }
-
-    #[test]
-    fn test_a_described_stranger_is_allowed() {
-        let world = world_with_andrew();
-        let node = ESNode::new("world", "npc", "mira_fenn")
-            .with_prop("occupation", ESValue::Text("innkeeper".to_string()));
-        assert!(validate_new_character("npc:mira_fenn", &node, &world).is_ok());
-    }
-
-    #[test]
-    fn test_type_words_are_rejected() {
-        let world = world_with_andrew();
-        for bad in ["player", "npc", "unknown"] {
-            let node = ESNode::new("world", "npc", bad)
-                .with_prop("occupation", ESValue::Text("guard".to_string()));
-            assert!(
-                validate_new_character(&format!("npc:{}", bad), &node, &world).is_err(),
-                "`{}` should not be accepted as a name",
-                bad
-            );
-        }
-    }
-
-    #[test]
-    fn test_duplicate_of_the_player_is_rejected() {
-        let world = world_with_andrew();
-        let node = ESNode::new("world", "npc", "andrew")
-            .with_prop("occupation", ESValue::Text("adventurer".to_string()));
-        assert!(validate_new_character("npc:andrew", &node, &world).is_err());
-    }
-
-    #[test]
-    fn test_malformed_id_is_rejected() {
-        let world = world_with_andrew();
-        let node = ESNode::new("world", "npc", "player:andrew")
-            .with_prop("name", ESValue::Text("Andrew".to_string()));
-        assert!(validate_new_character("npc:player:andrew", &node, &world).is_err());
-    }
-
-    #[test]
-    fn test_empty_shell_is_rejected() {
-        let world = world_with_andrew();
-        let node = ESNode::new("world", "npc", "guard");
-        assert!(
-            validate_new_character("npc:guard", &node, &world).is_err(),
-            "a character with nothing said about it is not a person"
-        );
-    }
-}
-
-#[cfg(test)]
-mod context_tests {
-    use super::*;
-    use crate::graph::{ESNode, ESValue};
-
-    #[test]
-    fn test_empty_inventory_is_stated_explicitly() {
-        let mut graph = ESGraph::new();
-        graph.insert(
-            ESNode::new("world", "player", "andrew")
-                .with_prop("location", ESValue::Text("market".to_string())),
-        );
-
-        let ctx = build_context(&graph, "player:andrew", "draw my sword");
-
-        assert!(ctx.contains("INVENTORY"), "INVENTORY section must always appear");
-        assert!(
-            ctx.contains("empty"),
-            "the model must be told the inventory is empty, or it invents items:\n{}",
-            ctx
-        );
-    }
-
-    #[test]
-    fn test_items_appear_without_a_container_node() {
-        let mut graph = ESGraph::new();
-        graph.insert(ESNode::new("world", "player", "andrew"));
-        graph.insert(
-            ESNode::new("inventory/andrew", "item", "shadow_blade")
-                .with_prop("name", ESValue::Text("Shadow Blade".to_string())),
-        );
-
-        let ctx = build_context(&graph, "player:andrew", "draw my blade");
-
-        assert!(
-            ctx.contains("Shadow Blade"),
-            "items must reach the prompt even with no container node:\n{}",
-            ctx
-        );
-    }
-
-    #[test]
-    fn test_context_is_deterministic() {
-        let mut graph = ESGraph::new();
-        graph.insert(
-            ESNode::new("world", "player", "andrew")
-                .with_prop("location", ESValue::Text("market".to_string()))
-                .with_prop("name", ESValue::Text("Andrew".to_string()))
-                .with_prop("courage", ESValue::Number(14.0)),
-        );
-
-        let a = build_context(&graph, "player:andrew", "wait");
-        let b = build_context(&graph, "player:andrew", "wait");
-        assert_eq!(a, b, "the same world must produce the same prompt");
-    }
-}
-
 /// Write a node's properties in a stable order. `props` is a HashMap, so
 /// unsorted iteration made an unchanged world produce a different prompt on
 /// every run — and therefore a different completion.
@@ -567,7 +422,7 @@ fn push_props(ctx: &mut String, node: &crate::graph::ESNode, indent: &str) {
     }
 }
 
-fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
+pub(super) fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
     let player = match graph.nodes.get(player_id) {
         Some(n) => n,
         None => return format!("Player {} not found", player_id),
@@ -698,7 +553,6 @@ fn build_context(graph: &ESGraph, player_id: &str, action: &str) -> String {
     ctx
 }
 
-
 fn build_namespace_docs(player_name: &str) -> String {
     let mut docs = String::new();
     docs.push_str("Namespaces and containers:\n");
@@ -723,7 +577,6 @@ fn build_namespace_docs(player_name: &str) -> String {
     docs.push_str("NEVER use owned_by or assigned_to edges — use container edges instead\n");
     docs
 }
-
 
 async fn call_player_agent(context: &str, player_name: &str) -> Result<String, String> {
     let namespace_docs = build_namespace_docs(player_name);
@@ -831,5 +684,3 @@ async fn call_player_agent(context: &str, player_name: &str) -> Result<String, S
     );
     crate::llm::call_ollama(crate::llm::player_model(), &prompt).await
 }
-
-

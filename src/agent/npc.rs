@@ -1,7 +1,6 @@
 use super::{format_value, merge_patch, VERBOSE};
 use crate::graph::{ESGraph, parse};
-use std::sync::Arc;
-
+use std::sync::{Arc, atomic::Ordering};
 
 use crate::state::AppState;
 
@@ -14,7 +13,8 @@ pub async fn npc_agent_tick(
 
     let context = {
         let graph = state.graph.read().await;
-        build_npc_context(&graph, npc_id, &signal.context, signal.strength)
+        let turn = state.turn.load(Ordering::Relaxed);
+        build_npc_context(&graph, npc_id, &signal.context, signal.strength, turn)
     };
     if VERBOSE {
         println!("npc context built:\n{}", context);
@@ -132,7 +132,7 @@ pub async fn npc_agent_tick(
 /// that don't exist (`@location:market` beside the real `market_district`) and
 /// the world quietly accumulates phantoms. World-building belongs to the
 /// game-master tier, not to a guard noticing something.
-fn scope_npc_patch(patch: &mut ESGraph, npc_id: &str, world: &ESGraph) {
+pub(super) fn scope_npc_patch(patch: &mut ESGraph, npc_id: &str, world: &ESGraph) {
     patch.nodes.retain(|key, _| {
         if key == npc_id {
             return true;
@@ -149,77 +149,7 @@ fn scope_npc_patch(patch: &mut ESGraph, npc_id: &str, world: &ESGraph) {
     });
 }
 
-#[cfg(test)]
-mod scope_tests {
-    use super::*;
-    use crate::graph::{ESNode, ESValue};
-
-    fn a_world() -> ESGraph {
-        let mut w = ESGraph::new();
-        w.insert(ESNode::new("world", "npc", "john_smith"));
-        w.insert(ESNode::new("world", "npc", "jin_lyons"));
-        w.insert(ESNode::new("world", "player", "andrew"));
-        w.insert(ESNode::new("world", "location", "market_district"));
-        w.insert(ESNode::new("world", "item", "dropped_coin"));
-        w
-    }
-
-    #[test]
-    fn test_npc_cannot_author_other_characters() {
-        let world = a_world();
-        let mut patch = ESGraph::new();
-        patch.insert(
-            ESNode::new("world", "npc", "john_smith")
-                .with_prop("alert_level", ESValue::Text("high".to_string())),
-        );
-        patch.insert(
-            ESNode::new("world", "npc", "jin_lyons")
-                .with_prop("narrative", ESValue::Text("Jin decides to flee.".to_string())),
-        );
-        patch.insert(
-            ESNode::new("world", "player", "andrew")
-                .with_prop("narrative", ESValue::Text("Andrew panics.".to_string())),
-        );
-
-        scope_npc_patch(&mut patch, "npc:john_smith", &world);
-
-        assert!(patch.nodes.contains_key("npc:john_smith"), "must keep its own node");
-        assert!(!patch.nodes.contains_key("npc:jin_lyons"), "must not write another NPC");
-        assert!(!patch.nodes.contains_key("player:andrew"), "must not write the player");
-    }
-
-    #[test]
-    fn test_npc_may_update_existing_world_objects() {
-        let world = a_world();
-        let mut patch = ESGraph::new();
-        patch.insert(ESNode::new("world", "npc", "john_smith"));
-        patch.insert(ESNode::new("world", "location", "market_district"));
-        patch.insert(ESNode::new("world", "item", "dropped_coin"));
-
-        scope_npc_patch(&mut patch, "npc:john_smith", &world);
-
-        assert!(patch.nodes.contains_key("location:market_district"));
-        assert!(patch.nodes.contains_key("item:dropped_coin"));
-    }
-
-    #[test]
-    fn test_npc_cannot_invent_places() {
-        let world = a_world();
-        let mut patch = ESGraph::new();
-        patch.insert(ESNode::new("world", "npc", "john_smith"));
-        // the real place is `market_district`; this is a phantom beside it
-        patch.insert(ESNode::new("world", "location", "market"));
-
-        scope_npc_patch(&mut patch, "npc:john_smith", &world);
-
-        assert!(
-            !patch.nodes.contains_key("location:market"),
-            "a reacting NPC must not conjure places that do not exist"
-        );
-    }
-}
-
-fn build_npc_context(graph: &ESGraph, npc_id: &str, signal_context: &str, signal_strength: f64) -> String {
+fn build_npc_context(graph: &ESGraph, npc_id: &str, signal_context: &str, signal_strength: f64, turn: u64) -> String {
     let npc = match graph.nodes.get(npc_id) {
         Some(n) => n,
         None => return format!("NPC {} not found", npc_id),
@@ -260,8 +190,8 @@ fn build_npc_context(graph: &ESGraph, npc_id: &str, signal_context: &str, signal
     ctx.push_str(&format!("  strength: {:.2}\n", signal_strength));
 
     // current awareness state
-    let awareness = crate::stats::current_awareness(npc, graph);
-    let perception = crate::stats::current_perception(npc, graph);
+    let awareness = crate::stats::current_awareness(npc, graph, turn);
+    let perception = crate::stats::current_perception(npc, graph, turn);
     ctx.push_str(&format!("  your_awareness: {:.2}\n", awareness));
     ctx.push_str(&format!("  your_perception: {:.2}\n", perception));
 

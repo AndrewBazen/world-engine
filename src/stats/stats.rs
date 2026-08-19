@@ -1,6 +1,8 @@
 use crate::graph::{ESGraph, ESNode, ESValue};
 use serde::{Serialize, Deserialize};
 
+pub const AWARENESS_HALF_LIFE_TURNS: f64 = 5.0;
+
 // ── Stat block structs ───────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,18 +465,14 @@ pub fn get_baseline_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
     perception_from_passive(get_passive(graph, &node.id, "passive_perception"))
 }
 
-pub fn current_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
+pub fn current_awareness(node: &ESNode, graph: &ESGraph, turn: u64) -> f64 {
     let baseline = get_baseline_awareness(node, graph);
     let peak = node.get_number("awareness_peak").unwrap_or(baseline);
     let last_raised = node.get_number("awareness_last_raised").unwrap_or(0.0);
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-
-    let elapsed = now - last_raised;
-    let decay_rate = node.get_number("awareness_decay_rate").unwrap_or(0.005);
+    let elapsed = (turn as f64 - last_raised).max(0.0);
+    let half_life = node.get_number("awareness_half_life").unwrap_or(AWARENESS_HALF_LIFE_TURNS);
+    let decay_rate = std::f64::consts::LN_2 / half_life.max(0.0001);
     let decayed = (peak - baseline) * (-decay_rate * elapsed).exp();
 
     (baseline + decayed).clamp(0.0, 1.0)
@@ -483,6 +481,6 @@ pub fn current_awareness(node: &ESNode, graph: &ESGraph) -> f64 {
 /// What this NPC can currently detect. Driven by senses and alertness only —
 /// intelligence deliberately does not enter here. A clever NPC is not
 /// automatically an observant one.
-pub fn current_perception(node: &ESNode, graph: &ESGraph) -> f64 {
-    current_awareness(node, graph)
+pub fn current_perception(node: &ESNode, graph: &ESGraph, turn: u64) -> f64 {
+    current_awareness(node, graph, turn)
 }
