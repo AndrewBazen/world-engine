@@ -1,8 +1,9 @@
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use crate::graph::{ESGraph, ESNode, ESEdge, ESValue};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 const NODES: TableDefinition<&str, &str> = TableDefinition::new("nodes");
 const EDGES: TableDefinition<&str, &str> = TableDefinition::new("edges");
 
@@ -60,11 +61,29 @@ pub fn connect() -> Result<Database, redb::Error> {
     
     // ensure tables exist
     let write_txn = db.begin_write()?;
+    write_txn.open_table(META)?;
     write_txn.open_table(NODES)?;
     write_txn.open_table(EDGES)?;
     write_txn.commit()?;
     
     Ok(db)
+}
+
+pub fn save_turn(db: &Database, turn: u64) -> Result<(), redb::Error> {
+    let write_txn = db.begin_write()?;
+    {
+        let mut meta_table = write_txn.open_table(META)?;
+        meta_table.insert("turn", turn)?;
+    }
+    write_txn.commit()?;
+    Ok(())
+}
+
+pub fn load_turn(db: &Database) -> Result<u64, redb::Error> {
+    let read_txn = db.begin_read()?;
+    let meta_table = read_txn.open_table(META)?;
+
+    Ok(meta_table.get("turn")?.map(|v| v.value()).unwrap_or(0))
 }
 
 pub fn save_node(db: &Database, key: &str, node: &ESNode) -> Result<(), redb::Error> {

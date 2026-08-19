@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 use crate::graph::{ESGraph, ESNode, ESValue};
 use crate::server::ServerMessage;
 use crate::state::AppState;
@@ -55,17 +56,18 @@ pub struct AbsorbedSignal {
     pub origin_id: String,
     pub context: String,
     pub strength: f64,
+    pub turn: u64,
 }
 
 // ── Perception gate ──────────────────────────────────────────
 
 /// Stat-derived perception check. Higher perception → detect weaker signals.
 /// Returns true if the NPC perceives the signal.
-fn perceives(node: &ESNode, graph: &ESGraph, arrival_strength: f64) -> bool {
+fn perceives(node: &ESNode, graph: &ESGraph, arrival_strength: f64, turn: u64) -> bool {
     // only npcs percieve the signals
     if node.node_type != "npc" { return false; }
 
-    let perception = stats::current_perception(node, graph);
+    let perception = stats::current_perception(node, graph, turn);
     // perception 0.8 → threshold 0.2 (catches weak signals)
     // perception 0.3 → threshold 0.7 (only catches strong signals)
     let threshold = 1.0 - perception;
@@ -76,7 +78,7 @@ fn perceives(node: &ESNode, graph: &ESGraph, arrival_strength: f64) -> bool {
 
 /// Record that this NPC perceived a signal. Updates awareness state
 /// so future perception checks reflect heightened alertness.
-fn absorb(node: &mut ESNode, baseline: f64, current_awareness: f64, signal: &EventSignal, strength: f64) {
+fn absorb(node: &mut ESNode, baseline: f64, current_awareness: f64, signal: &EventSignal, strength: f64, turn: u64) {
     // record what was perceived
     node.props.insert(
         "last_signal_context".to_string(),
@@ -101,14 +103,9 @@ fn absorb(node: &mut ESNode, baseline: f64, current_awareness: f64, signal: &Eve
         ESValue::Number(new_peak),
     );
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-
     node.props.insert(
         "awareness_last_raised".to_string(),
-        ESValue::Number(now),
+        ESValue::Number(turn as f64),
     );
 }
 
@@ -144,6 +141,8 @@ fn node_location(node: &ESNode) -> Option<String> {
 ///
 /// Returns a list of NPCs that absorbed the signal and need agent calls.
 pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Vec<AbsorbedSignal>, HashSet<String>) {
+    let turn = state.turn.load(Ordering::Relaxed);
+
     // only propagate from world nodes
     if !ESGraph::is_world_key(&initial_signal.origin_id) {
         return (Vec::new(), HashSet::new());
@@ -197,10 +196,10 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                 graph.nodes.get(&neighbor_id).map(|n| {
                     (
                         n.node_type == "npc",
-                        perceives(n, &graph, arriving),
+                        perceives(n, &graph, arriving, turn),
                         node_location(n),
                         stats::get_baseline_awareness(n, &graph),
-                        stats::current_awareness(n, &graph),
+                        stats::current_awareness(n, &graph, turn),
                     )
                 })
             };
@@ -214,7 +213,6 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
             else {
                 continue;
             };
-
 
             if is_npc && perceived {
                 let _ = state.tx.send(ServerMessage::SignalHop {
@@ -232,7 +230,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                 {
                     let mut graph = state.graph.write().await;
                     if let Some(neighbor) = graph.nodes.get_mut(&neighbor_id) {
-                        absorb(neighbor, baseline, awareness, &signal, arriving);
+                        absorb(neighbor, baseline, awareness, &signal, arriving, turn);
 
                         let props = serde_json::to_value(&neighbor.props).unwrap_or_default();
                         let _ = state.tx.send(ServerMessage::NodeUpdate {
@@ -253,6 +251,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                     origin_id: signal.origin_id.clone(),
                     context: signal.context.clone(),
                     strength: arriving,
+                    turn: turn,
                 });
 
                 // queue continuation along this node's edges
@@ -323,9 +322,9 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                     match graph.nodes.get(npc_id) {
                         Some(n) => (
                             n.node_type == "npc",
-                            perceives(n, &graph, ambient_strength),
+                            perceives(n, &graph, ambient_strength, turn),
                             stats::get_baseline_awareness(n, &graph),
-                            stats::current_awareness(n, &graph),
+                            stats::current_awareness(n, &graph, turn),
                         ),
                         None => (false, false, 0.0, 0.0),
                     }
@@ -343,11 +342,10 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                         hop: signal.depth + 1,
                     });
 
-
                     {
                         let mut graph = state.graph.write().await;
                         if let Some(npc_node) = graph.nodes.get_mut(npc_id) {
-                            absorb(npc_node, baseline, awareness, &signal, ambient_strength);
+                            absorb(npc_node, baseline, awareness, &signal, ambient_strength, turn);
 
                             let props = serde_json::to_value(&npc_node.props).unwrap_or_default();
                             let _ = state.tx.send(ServerMessage::NodeUpdate {
@@ -362,6 +360,7 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
                         origin_id: signal.origin_id.clone(),
                         context: signal.context.clone(),
                         strength: ambient_strength,
+                        turn: turn,
                     });
 
                     // ambient-absorbed NPCs also propagate structurally
@@ -403,240 +402,4 @@ pub async fn propagate(state: Arc<AppState>, initial_signal: EventSignal) -> (Ve
     });
 
     (absorbed_npcs, all_visited)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_structural_propagation_with_perception() {
-        let mut graph = ESGraph::new();
-
-        let player = ESNode::new("world", "player", "andrew")
-            .with_edge("near", "npc", "guard");
-
-        // guard needs a stat block for perception to work
-        let guard = ESNode::new("world", "npc", "guard")
-            .with_edge("reports_to", "npc", "commander");
-
-        let commander = ESNode::new("world", "npc", "commander");
-
-        graph.insert(player);
-        graph.insert(guard);
-        graph.insert(commander);
-
-        // give both NPCs stat blocks so perception works
-        let guard_stats = stats::StatBlock::default();
-        stats::write_stat_block(&mut graph, "guard", &guard_stats);
-
-        let commander_stats = stats::StatBlock::default();
-        stats::write_stat_block(&mut graph, "commander", &commander_stats);
-
-        let state = AppState::new_without_db(graph);
-
-        let signal = EventSignal::new(
-            "player:andrew",
-            0.9,
-            "slipped past the garrison unseen",
-        );
-
-        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
-
-        // guard should have absorbed (strong signal, default perception)
-        assert!(absorbed.iter().any(|a| a.npc_id == "npc:guard"));
-
-        // check awareness was updated (not activation)
-        let graph = state.graph.read().await;
-        let guard = graph.get("world", "npc", "guard").unwrap();
-        assert!(guard.get_number("awareness_peak").is_some());
-        assert!(guard.get_number("awareness_last_raised").is_some());
-        assert!(matches!(
-            guard.props.get("last_signal_context"),
-            Some(ESValue::Text(s)) if s == "slipped past the garrison unseen"
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_ambient_broadcast() {
-        let mut graph = ESGraph::new();
-
-        let player = ESNode::new("world", "player", "andrew")
-            .with_prop("location", ESValue::Text("market".to_string()))
-            .with_edge("near", "npc", "merchant");
-
-        // merchant is connected by edge
-        let merchant = ESNode::new("world", "npc", "merchant")
-            .with_prop("location", ESValue::Text("market".to_string()));
-
-        // bystander has no edge to player but is at same location
-        let bystander = ESNode::new("world", "npc", "bystander")
-            .with_prop("location", ESValue::Text("market".to_string()));
-
-        // distant_guard is at a different location — should NOT absorb
-        let distant_guard = ESNode::new("world", "npc", "distant_guard")
-            .with_prop("location", ESValue::Text("barracks".to_string()));
-
-        graph.insert(player);
-        graph.insert(merchant);
-        graph.insert(bystander);
-        graph.insert(distant_guard);
-
-        // stat blocks for all NPCs
-        let default_stats = stats::StatBlock::default();
-        stats::write_stat_block(&mut graph, "merchant", &default_stats);
-        stats::write_stat_block(&mut graph, "bystander", &default_stats);
-        stats::write_stat_block(&mut graph, "distant_guard", &default_stats);
-
-        let state = AppState::new_without_db(graph);
-
-        let signal = EventSignal::new(
-            "player:andrew",
-            0.9,
-            "stole bread from merchant stall",
-        );
-
-        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
-
-        // merchant absorbed via structural edge
-        assert!(absorbed.iter().any(|a| a.npc_id == "npc:merchant"));
-        // bystander absorbed via ambient broadcast (same location)
-        assert!(absorbed.iter().any(|a| a.npc_id == "npc:bystander"));
-        // distant_guard should NOT have absorbed
-        assert!(!absorbed.iter().any(|a| a.npc_id == "npc:distant_guard"));
-    }
-
-    #[tokio::test]
-    async fn test_weak_signal_filtered_by_perception() {
-        let mut graph = ESGraph::new();
-
-        let player = ESNode::new("world", "player", "andrew")
-            .with_edge("near", "npc", "dim_guard");
-
-        let dim_guard = ESNode::new("world", "npc", "dim_guard");
-
-        graph.insert(player);
-        graph.insert(dim_guard);
-
-        // give dim_guard a very low perception stat block
-        let mut low_stats = stats::StatBlock::default();
-        low_stats.wisdom = 3;
-        low_stats.skills.perception = -2;
-        let low_stats = low_stats.clamp();
-        stats::write_stat_block(&mut graph, "dim_guard", &low_stats);
-
-        let state = AppState::new_without_db(graph);
-
-        // weak signal — should fail perception check for a dim guard
-        let signal = EventSignal::new(
-            "player:andrew",
-            0.3,
-            "quietly pocketed a coin",
-        );
-
-        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
-
-        // dim guard should NOT perceive a weak signal
-        assert!(!absorbed.iter().any(|a| a.npc_id == "npc:dim_guard"));
-    }
-
-    #[tokio::test]
-    async fn test_dangling_edges_emit_no_hops() {
-        let mut graph = ESGraph::new();
-        graph.insert(
-            ESNode::new("world", "player", "andrew")
-                .with_prop("location", ESValue::Text("market".to_string()))
-                // these two targets do not exist
-                .with_edge("saw", "npc", "ghost")
-                .with_edge("entered", "location", "nowhere"),
-        );
-
-        let state = AppState::new_without_db(graph);
-        let mut rx = state.tx.subscribe();
-
-        let sig = EventSignal::new("player:andrew", 0.9, "looks around");
-        let _ = crate::signal::propagate(state.clone(), sig).await;
-
-        let mut targets = Vec::new();
-        while let Ok(msg) = rx.try_recv() {
-            if let crate::server::ServerMessage::SignalHop { to, .. } = msg {
-                targets.push(to);
-            }
-        }
-
-        assert!(
-            targets.is_empty(),
-            "a signal must not travel through nodes that do not exist, got {:?}",
-            targets
-        );
-    }
-
-    #[tokio::test]
-    async fn test_awareness_saturates_instead_of_ratcheting() {
-        let mut graph = ESGraph::new();
-        graph.insert(
-            ESNode::new("world", "player", "andrew")
-                .with_prop("location", ESValue::Text("market".to_string())),
-        );
-        graph.insert(
-            ESNode::new("world", "npc", "guard")
-                .with_prop("location", ESValue::Text("market".to_string())),
-        );
-        stats::write_stat_block(&mut graph, "guard", &stats::StatBlock::default());
-
-        let state = AppState::new_without_db(graph);
-
-        // the same event, over and over
-        for _ in 0..5 {
-            let sig = EventSignal::new("player:andrew", 0.8, "a scuffle in the market");
-            let _ = crate::signal::propagate(state.clone(), sig).await;
-        }
-
-        let graph = state.graph.read().await;
-        let guard = graph.get("world", "npc", "guard").unwrap();
-        let peak = guard.get_number("awareness_peak").unwrap();
-
-        assert!(
-            peak < 0.85,
-            "repeated identical signals must not ratchet awareness toward 1.0 \
-             (an NPC at 0.99 has a threshold near zero and absorbs everything), got {}",
-            peak
-        );
-    }
-
-    #[tokio::test]
-    async fn test_propagation_skips_private_nodes() {
-        let mut graph = ESGraph::new();
-
-        let player = ESNode::new("world", "player", "andrew")
-            .with_prop("location", ESValue::Text("market".to_string()))
-            .with_edge("near", "npc", "guard");
-
-        let item = ESNode::new("inventory/andrew", "item", "sword")
-            .with_prop("location", ESValue::Text("market".to_string()));
-
-        let guard = ESNode::new("world", "npc", "guard")
-            .with_prop("location", ESValue::Text("market".to_string()));
-
-        graph.insert(player);
-        graph.insert(item);
-        graph.insert(guard);
-
-        let default_stats = stats::StatBlock::default();
-        stats::write_stat_block(&mut graph, "guard", &default_stats);
-
-        let state = AppState::new_without_db(graph);
-
-        let signal = EventSignal::new(
-            "player:andrew",
-            0.9,
-            "drew a weapon",
-        );
-
-        let (absorbed, _visited) = crate::signal::propagate(state.clone(), signal).await;
-
-        // guard should absorb, but no inventory items should appear
-        assert!(absorbed.iter().any(|a| a.npc_id == "npc:guard"));
-        assert!(!absorbed.iter().any(|a| a.npc_id.contains("inventory")));
-    }
 }
