@@ -1,6 +1,6 @@
 use crate::graph::{ESGraph, ESNode, ESValue};
 
-pub fn serialize(graph: &ESGraph) -> String {
+pub fn to_es_string(graph: &ESGraph) -> String {
     let mut output = String::new();
 
     for node in graph.nodes.values() {
