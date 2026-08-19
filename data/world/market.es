@@ -26,12 +26,21 @@
   rarity: rare
 
 # ── NPCs ─────────────────────────────────────────────────────
+# Grades: feeble | poor | average | capable | exceptional
+# Proficient: any of athletics, acrobatics, stealth, perception, insight,
+#             persuasion, deception, intimidation, sleight_of_hand, investigation
+
 @npc:thomas_pellar
   name: "Thomas Pellar"
   occupation: merchant
   personality: cunning
   build: thin
   location: market_district
+  physique: poor
+  agility: average
+  awareness: average
+  presence: capable
+  proficient: persuasion, insight, deception
   --[located_in]--> @location:market_district
 
 @npc:jin_lyons
@@ -40,6 +49,11 @@
   personality: shifty
   build: thin
   location: market_district
+  physique: poor
+  agility: capable
+  awareness: capable
+  presence: poor
+  proficient: perception, stealth, sleight_of_hand
   --[located_in]--> @location:market_district
 
 @npc:john_smith
@@ -48,6 +62,11 @@
   personality: loyal
   build: large
   location: market_district
+  physique: capable
+  agility: average
+  awareness: capable
+  presence: average
+  proficient: perception, athletics, intimidation
   --[reports_to]--> @npc:elias_roth
   --[located_in]--> @location:market_district
 
@@ -57,4 +76,9 @@
   personality: stern
   build: average
   location: guard_headquarters
+  physique: average
+  agility: average
+  awareness: average
+  presence: exceptional
+  proficient: insight, intimidation
   --[located_in]--> @location:guard_headquarters
